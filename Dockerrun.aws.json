@@ -1,15 +1,12 @@
 {
   "AWSEBDockerrunVersion": "1",
   "Image": {
-    "Name": "node:20-alpine",
+    "Name": "687159379528.dkr.ecr.us-east-1.amazonaws.com/simple-docker-service-0e1d340f6405:latest",
     "Update": "true"
   },
   "Ports": [
     {
-      "ContainerPort": "8090",
-      "HostPort": "80"
+      "ContainerPort": "8090"
     }
-  ],
-  "Volumes": [],
-  "Logging": "/var/log/stdout"
+  ]
 }
