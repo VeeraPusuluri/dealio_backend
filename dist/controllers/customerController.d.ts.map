@@ -1,0 +1,1 @@
+{"version":3,"file":"customerController.d.ts","sourceRoot":"","sources":["../../src/controllers/customerController.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,QAAQ,EAAE,MAAM,SAAS,CAAC;AAG5C,eAAO,MAAM,kBAAkB;qBACN,OAAO,OAAO,QAAQ;uBAQpB,OAAO,OAAO,QAAQ;sBASvB,OAAO,OAAO,QAAQ;CAS/C,CAAC"}

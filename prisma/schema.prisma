@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              Int              @id @default(autoincrement())
+  phone           String           @unique
+  fullName        String?
+  email           String?          @unique
+  role            String           // BUILDER, CUSTOMER, CP, BANK, NRI, ADMIN
+  preferredCity   String?
+  whatsappOptIn   Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+  builder         Builder?
+  channelPartner  ChannelPartner?
+  meetings          Meeting[]
+  dealsAsCustomer   Deal[]           @relation("CustomerDeals")
+  loanCases         LoanCase[]
+  notifications     Notification[]
+  unitShortlists    UnitShortlist[]  @relation("CustomerShortlists")
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  title     String
+  message   String
+  type      String   @default("info")
+  read      Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+}
+
+model Builder {
+  id                Int         @id @default(autoincrement())
+  userId            Int         @unique
+  companyName       String?
+  about             String?
+  yearEstablished   Int?
+  deliveredProjects Int?
+  website           String?
+  contactPhone      String?
+  contactEmail      String?
+  user              User        @relation(fields: [userId], references: [id])
+  projects          Project[]
+  meetings          Meeting[]   @relation("BuilderMeetings")
+  deals             Deal[]
+  broadcasts        Broadcast[]
+  unitShortlists    UnitShortlist[]
+}
+
+model Broadcast {
+  id             Int      @id @default(autoincrement())
+  builderId      Int
+  builder        Builder  @relation(fields: [builderId], references: [id])
+  projectId      Int?
+  projectName    String?
+  message        String
+  audience       String   @default("All CPs")
+  audienceFilter String?
+  delivered      Int      @default(0)
+  createdAt      DateTime @default(now())
+}
+
+model Project {
+  id              Int       @id @default(autoincrement())
+  builderId       Int
+  builder         Builder   @relation(fields: [builderId], references: [id])
+  name            String
+  city            String?
+  locality        String?
+  pincode         String?
+  landmark        String?
+  description     String?
+  address         String?
+  projectType     String?
+  configurations  Json?
+  nearbyHighlights Json?
+  amenities       Json?
+  totalUnits      Int?
+  availableUnits  Int?
+  bookedUnits     Int?
+  soldUnits       Int?
+  reraNumber      String?
+  reraExpiry      String?
+  priceFrom       Float?
+  priceTo         Float?
+  pricePerSqftFrom Float?
+  pricePerSqftTo   Float?
+  maintenanceCharges Float?
+  floorRiseCharges   Float?
+  commissionStructure String?
+  commissionValue Float?
+  cpIncentive     String?
+  featured        Boolean   @default(false)
+  closingSoon     Boolean   @default(false)
+  imageUrl              String?
+  videoUrl              String?
+  googleMapsLink        String?
+  possessionDate        String?
+  published             Boolean   @default(true)
+  status                String    @default("ACTIVE")
+  createdAt             DateTime  @default(now())
+  // Rich detail fields (from AddProjectWizard v2)
+  landArea              String?
+  buildingPermitNumber  String?
+  reraState             String?
+  clubhouseAreaSqft     Int?
+  specifications        Json?
+  paymentPlans          Json?
+  locationAdvantages    Json?
+  towers                Int?
+  floorsPerTower        Int?
+  unitMatrix            Json?
+  projectUpdates        ProjectUpdate[]
+  meetings              Meeting[]
+  deals                 Deal[]
+  documents             Document[]
+  shareLinks            ProjectShareLink[]
+  unitShortlists        UnitShortlist[]
+}
+
+model UnitShortlist {
+  id          Int      @id @default(autoincrement())
+  customerId  Int
+  customer    User     @relation("CustomerShortlists", fields: [customerId], references: [id])
+  builderId   Int
+  builder     Builder  @relation(fields: [builderId], references: [id])
+  projectId   Int
+  project     Project  @relation(fields: [projectId], references: [id])
+  cpId        Int?
+  unitId      String
+  unitDetails Json
+  status      String   @default("Pending") // Pending, Accepted, SuggestOther
+  builderNote String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ProjectShareLink {
+  id         Int              @id @default(autoincrement())
+  token      String           @unique
+  projectId  Int
+  project    Project          @relation(fields: [projectId], references: [id])
+  cpId       Int?
+  cp         ChannelPartner?  @relation(fields: [cpId], references: [id])
+  clickCount Int              @default(0)
+  createdAt  DateTime         @default(now())
+}
+
+model Meeting {
+  id              Int       @id @default(autoincrement())
+  projectId       Int?
+  project         Project?  @relation(fields: [projectId], references: [id])
+  customerId      Int
+  customer        User      @relation(fields: [customerId], references: [id])
+  builderId       Int
+  builder         Builder   @relation("BuilderMeetings", fields: [builderId], references: [id])
+  cpId            Int?      // ChannelPartner.id who arranged this meeting
+  customerPhone   String
+  customerName    String
+  preferredDate   String
+  preferredTime   String
+  meetingType     String?
+  notes           String?
+  builderNotes    String?
+  cpNotes         String?
+  cpRating        Int?      // 1–5, set by CP after visit
+  customerRating  Int?      // 1–5, set by customer after visit
+  confirmedDate   String?
+  confirmedTime   String?
+  status          String    @default("Pending") // Pending, Confirmed, Rescheduled, Completed, Follow-up Required, Cancelled
+  createdAt       DateTime  @default(now())
+}
+
+model Deal {
+  id              Int              @id @default(autoincrement())
+  builderId       Int
+  builder         Builder          @relation(fields: [builderId], references: [id])
+  customerId      Int
+  customer        User             @relation("CustomerDeals", fields: [customerId], references: [id])
+  projectId       Int
+  project         Project          @relation(fields: [projectId], references: [id])
+  cpId            Int?
+  cp              ChannelPartner?  @relation(fields: [cpId], references: [id])
+  status               String    @default("Enquiry")
+  dealValue            Float?
+  isNRI                Boolean   @default(false)
+  commissionStatus     String?   @default("Pending")
+  commissionReleasedAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  loanCase             LoanCase?
+  messages             DealMessage[]
+  followUps            CPFollowUp[]
+  callLogs             CPCallLog[]
+  paymentSchedule      Json?     // [{installment:string, amount:number, dueDate:string, status:'Pending'|'Paid'}]
+  cpAgreed             Boolean   @default(false)
+  customerConfirmed    Boolean   @default(false)
+  dealDocuments        DealDocument[]
+}
+
+model DealMessage {
+  id         Int      @id @default(autoincrement())
+  dealId     Int
+  deal       Deal     @relation(fields: [dealId], references: [id])
+  senderId   Int
+  senderName String
+  senderRole String
+  message    String
+  createdAt  DateTime @default(now())
+}
+
+model DealDocument {
+  id                 Int      @id @default(autoincrement())
+  dealId             Int
+  deal               Deal     @relation(fields: [dealId], references: [id])
+  name               String
+  docType            String   // 'Pricing Quote' | 'Sale Agreement' | 'Allotment Letter' | 'Other'
+  fileUrl            String?
+  uploadedByRole     String   @default("builder")
+  sharedWithCp       Boolean  @default(false)
+  sharedWithCustomer Boolean  @default(false)
+  createdAt          DateTime @default(now())
+}
+
+model LoanCase {
+  id              Int        @id @default(autoincrement())
+  dealId          Int        @unique
+  deal            Deal       @relation(fields: [dealId], references: [id])
+  customerId      Int
+  customer        User       @relation(fields: [customerId], references: [id])
+  projectId       Int
+  loanAmount      Float
+  propertyValue   Float
+  employmentType  String?
+  tenureMonths    Int?
+  bank            String?
+  interestRate    Float?
+  emi             Float?
+  officerName     String?
+  officerPhone    String?
+  status          String     @default("Applied") // Applied, Under Review, Sanctioned, Disbursed, Rejected
+  submittedAt     DateTime   @default(now())
+  notes           LoanNote[]
+}
+
+model LoanNote {
+  id          Int      @id @default(autoincrement())
+  loanCaseId  Int
+  loanCase    LoanCase @relation(fields: [loanCaseId], references: [id])
+  type        String   @default("note") // note, status_update, document, loan_initiated
+  sender      String
+  senderRole  String
+  content     String
+  createdAt   DateTime @default(now())
+}
+
+model Document {
+  id              Int       @id @default(autoincrement())
+  projectId       Int
+  project         Project   @relation(fields: [projectId], references: [id])
+  name            String
+  url             String
+  docType         String
+  createdAt       DateTime  @default(now())
+}
+
+model ChannelPartner {
+  id                Int              @id @default(autoincrement())
+  userId            Int              @unique
+  user              User             @relation(fields: [userId], references: [id])
+  city              String?
+  bio               String?
+  reraNumber        String?
+  tier              String           @default("Silver") // Silver, Gold, Platinum
+  totalDeals        Int              @default(0)
+  dealsThisMonth    Int              @default(0)
+  totalEarnings     Float            @default(0)
+  pendingCommission Float            @default(0)
+  influencerScore   Int              @default(0)
+  sharesThisMonth   Int              @default(0)
+  leadsFromSocial   Int              @default(0)
+  joinedDate        String?
+  phoneVerified     Boolean          @default(false)
+  aadhaarVerified   Boolean          @default(false)
+  panVerified       Boolean          @default(false)
+  reraVerified      Boolean          @default(false)
+  aadhaarUrl        String?
+  panUrl            String?
+  reraUrl           String?
+  referredById      Int?
+  referredBy        ChannelPartner?  @relation("CPReferrals", fields: [referredById], references: [id])
+  referrals         ChannelPartner[] @relation("CPReferrals")
+  deals             Deal[]
+  contacts          CPContact[]
+  shareLinks        ProjectShareLink[]
+  followUps         CPFollowUp[]
+  callLogs          CPCallLog[]
+  createdAt         DateTime         @default(now())
+}
+
+model CPContact {
+  id              Int            @id @default(autoincrement())
+  cpId            Int
+  cp              ChannelPartner @relation(fields: [cpId], references: [id])
+  name            String
+  phone           String
+  email           String?
+  notes           String?
+  tags            String?        // comma-separated: "Hot Lead,Family,Colleague"
+  bhkPreference   String?        // e.g. "2 BHK", "3 BHK", "Villa"
+  createdAt       DateTime       @default(now())
+}
+
+model ContactRequest {
+  id        Int      @id @default(autoincrement())
+  name      String
+  phone     String
+  email     String?
+  city      String?
+  interest  String?
+  message   String?
+  status    String   @default("new") // new | in_progress | resolved
+  createdAt DateTime @default(now())
+}
+
+model CPFollowUp {
+  id        Int            @id @default(autoincrement())
+  cpId      Int
+  cp        ChannelPartner @relation(fields: [cpId], references: [id])
+  dealId    Int
+  deal      Deal           @relation(fields: [dealId], references: [id])
+  dueDate   String         // YYYY-MM-DD
+  dueTime   String?
+  reason    String
+  done      Boolean        @default(false)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+}
+
+model CPCallLog {
+  id               Int            @id @default(autoincrement())
+  cpId             Int
+  cp               ChannelPartner @relation(fields: [cpId], references: [id])
+  dealId           Int
+  deal             Deal           @relation(fields: [dealId], references: [id])
+  outcome          String
+  duration         String
+  notes            String         @default("")
+  nextFollowUp     String?        // YYYY-MM-DD
+  nextFollowUpTime String?
+  createdAt        DateTime       @default(now())
+  createdBy        String
+}
+
+model ProjectUpdate {
+  id          Int       @id @default(autoincrement())
+  projectId   Int
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  content     String
+  type        String    @default("announcement") // announcement | milestone | construction | legal | price
+  // comma-separated roles that can see this: ALL | CP | CUSTOMER | CP,CUSTOMER
+  visibleTo   String    @default("ALL")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
