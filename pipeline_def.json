@@ -1,0 +1,121 @@
+{
+    "pipeline": {
+        "name": "SimpleDockerService",
+        "roleArn": "arn:aws:iam::687159379528:role/CodePipelineStarterTemplate-PushTo-CodePipelineRole-Q2S1e2QdsNlx",
+        "artifactStore": {
+            "type": "S3",
+            "location": "codepipelinestartertempla-codepipelineartifactsbuc-0se4k2myh39z"
+        },
+        "stages": [
+            {
+                "name": "Source",
+                "actions": [
+                    {
+                        "name": "CodeConnections",
+                        "actionTypeId": {
+                            "category": "Source",
+                            "owner": "AWS",
+                            "provider": "CodeStarSourceConnection",
+                            "version": "1"
+                        },
+                        "runOrder": 1,
+                        "configuration": {
+                            "BranchName": "main",
+                            "ConnectionArn": "arn:aws:codeconnections:us-east-1:687159379528:connection/ca8513a9-9ea7-49bc-958f-a9035adfa824",
+                            "FullRepositoryId": "VeeraPusuluri/dealio_backend"
+                        },
+                        "outputArtifacts": [
+                            {
+                                "name": "SourceOutput"
+                            }
+                        ],
+                        "inputArtifacts": [],
+                        "roleArn": "arn:aws:iam::687159379528:role/CodePipelineStarterTempla-CodeConnectionsActionRole-ZpubrwnP7yj0"
+                    }
+                ],
+                "onFailure": {
+                    "result": "RETRY",
+                    "retryConfiguration": {
+                        "retryMode": "ALL_ACTIONS"
+                    }
+                }
+            },
+            {
+                "name": "Build_and_Deploy",
+                "actions": [
+                    {
+                        "name": "Docker_Build_Tag_and_Push",
+                        "actionTypeId": {
+                            "category": "Build",
+                            "owner": "AWS",
+                            "provider": "CodeBuild",
+                            "version": "1"
+                        },
+                        "runOrder": 1,
+                        "configuration": {
+                            "ProjectName": "SimpleDockerProject-0e1d340f6405"
+                        },
+                        "outputArtifacts": [],
+                        "inputArtifacts": [
+                            {
+                                "name": "SourceOutput"
+                            }
+                        ],
+                        "roleArn": "arn:aws:iam::687159379528:role/CodePipelineStarterTemplate-Pus-CodeBuildActionRole-YyHD4se4XD1i"
+                    }
+                ],
+                "onFailure": {
+                    "result": "ROLLBACK"
+                },
+                "beforeEntry": {
+                    "conditions": [
+                        {
+                            "result": "FAIL",
+                            "rules": [
+                                {
+                                    "name": "MyDeploymentWindowRule",
+                                    "ruleTypeId": {
+                                        "category": "Rule",
+                                        "owner": "AWS",
+                                        "provider": "DeploymentWindow",
+                                        "version": "1"
+                                    },
+                                    "configuration": {
+                                        "Cron": "* * * * * ? *",
+                                        "TimeZone": "PST"
+                                    },
+                                    "inputArtifacts": []
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ],
+        "version": 1,
+        "executionMode": "QUEUED",
+        "pipelineType": "V2",
+        "triggers": [
+            {
+                "providerType": "CodeStarSourceConnection",
+                "gitConfiguration": {
+                    "sourceActionName": "CodeConnections",
+                    "push": [
+                        {
+                            "branches": {
+                                "includes": [
+                                    "main"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "pipelineArn": "arn:aws:codepipeline:us-east-1:687159379528:SimpleDockerService",
+        "created": "2026-06-15T12:03:06.404000+05:30",
+        "updated": "2026-06-15T12:03:06.404000+05:30"
+    }
+}
