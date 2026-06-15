@@ -1,0 +1,15 @@
+{
+  "AWSEBDockerrunVersion": "1",
+  "Image": {
+    "Name": "node:20-alpine",
+    "Update": "true"
+  },
+  "Ports": [
+    {
+      "ContainerPort": "8090",
+      "HostPort": "80"
+    }
+  ],
+  "Volumes": [],
+  "Logging": "/var/log/stdout"
+}
