@@ -95,16 +95,23 @@ export const authService = {
     otps.set(phone, { code, expiresAt: now + OTP_TTL_MS, attempts: 0 });
 
     // Delivery preference: WhatsApp → SMS → console mock. A WhatsApp failure
-    // (e.g. the number has no WhatsApp account) falls through to SMS when a
-    // provider is configured.
-    if (WHATSAPP_ENABLED) {
+    // (e.g. the number has no WhatsApp account or isn't in the allowed list) falls through to SMS when a
+    // provider is configured. Only attempt WhatsApp for existing users who opted in.
+    const userRecord = await prisma.user.findUnique({ where: { phone: e164 } });
+
+    if (WHATSAPP_ENABLED && userRecord?.whatsappOptIn) {
       const wa = await sendWhatsAppOtp(e164, code);
       if (wa.ok) {
         console.log(`[AuthService] OTP sent via WhatsApp to ${maskPhone(e164)}`);
         return { success: true, message: 'Code sent on WhatsApp', maskedPhone: maskPhone(e164) };
       }
       console.error(`[AuthService] WhatsApp send failed for ${maskPhone(e164)}: ${wa.detail}`);
+      // If no SMS provider is configured, allow a non-production demo fallback so devs can continue.
       if (!smsProviderConfigured()) {
+        if (!isProduction()) {
+          otps.delete(phone);
+          return { success: true, message: 'OTP (dev demo)', maskedPhone: maskPhone(e164), demoCode: code };
+        }
         otps.delete(phone);
         return { success: false, status: 502, message: 'Could not send the code on WhatsApp. Please try again.' };
       }
