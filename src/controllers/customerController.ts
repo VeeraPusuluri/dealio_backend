@@ -188,7 +188,14 @@ export const customerController = {
     const { verifyEmailToken } = await import('../services/emailVerificationService');
     const result = await verifyEmailToken(token);
     if (!result.ok) return res.status(400).json({ ok: false, message: result.reason });
-    res.json({ ok: true, message: 'Email verified' });
+
+    // Return updated user data so frontend can update UI immediately
+    const user = await prisma.user.findUnique({
+      where: { id: result.userId },
+      select: { id: true, email: true, emailVerified: true, fullName: true, phone: true, role: true }
+    });
+
+    res.json({ ok: true, message: 'Email verified', user });
   },
 
   getNotifications: async (req: Request, res: Response) => {
