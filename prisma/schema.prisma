@@ -24,6 +24,7 @@ model User {
   loanCases         LoanCase[]
   notifications     Notification[]
   unitShortlists    UnitShortlist[]  @relation("CustomerShortlists")
+  emailVerifications EmailVerification[]
 }
 
 model Notification {
