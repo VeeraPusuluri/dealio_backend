@@ -12,6 +12,7 @@ model User {
   phone           String           @unique
   fullName        String?
   email           String?          @unique
+  emailVerified   Boolean          @default(false)
   role            String           // BUILDER, CUSTOMER, CP, BANK, NRI, ADMIN
   preferredCity   String?
   whatsappOptIn   Boolean          @default(false)
@@ -371,4 +372,15 @@ model ProjectUpdate {
   visibleTo   String    @default("ALL")
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+}
+
+// Email verification tokens for user-provided addresses
+model EmailVerification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  email     String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 }

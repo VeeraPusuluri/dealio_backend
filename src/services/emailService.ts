@@ -64,3 +64,30 @@ export async function sendCalendarInvite(opts: {
     ],
   });
 }
+
+export async function sendVerificationEmail(toEmail: string, token: string, name?: string) {
+  const transport = createTransport();
+  if (!transport) {
+    console.warn('[emailService] SMTP not configured — skipping verification email');
+    return;
+  }
+
+  const from = process.env.SMTP_FROM ?? process.env.SMTP_USER ?? 'noreply@dealio.com';
+  const frontend = process.env.FRONTEND_URL ?? process.env.FRONTEND_API_URL ?? '';
+  const verifyUrl = frontend ? `${frontend.replace(/\/$/, '')}/verify-email?token=${token}` : '';
+  const html = `
+    <p>Hi ${name ?? 'there'},</p>
+    <p>Please verify your email address by clicking the link below:</p>
+    <p><a href="${verifyUrl}">${verifyUrl || token}</a></p>
+    <p>If the link does not work, use this token: <strong>${token}</strong></p>
+    <p>This link expires in 24 hours.</p>
+    <p>Thanks,<br/>Dealio Team</p>
+  `;
+
+  await transport.sendMail({
+    from,
+    to: toEmail,
+    subject: 'Verify your email for Dealio',
+    html,
+  });
+}

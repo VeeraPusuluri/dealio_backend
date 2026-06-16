@@ -128,12 +128,59 @@ export const customerController = {
   updateProfile: async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const { email } = req.body;
+
+    const current = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+    const newEmail = (email || null) as string | null;
+
+    // If email changed, mark unverified and send verification email
     const updated = await prisma.user.update({
       where: { id: userId },
-      data: { email: email || null },
-      select: { id: true, email: true, fullName: true, phone: true, role: true }
+      data: { email: newEmail, ...(current?.email !== newEmail ? { emailVerified: false } : {}) },
+      select: { id: true, email: true, fullName: true, phone: true, role: true, emailVerified: true }
     });
+
+    if (newEmail && current?.email !== newEmail) {
+      // Create token and send verification
+      const { createEmailVerification } = await import('../services/emailVerificationService');
+      const { sendVerificationEmail } = await import('../services/emailService');
+      try {
+        const token = await createEmailVerification(userId, newEmail);
+        await sendVerificationEmail(newEmail, token, updated.fullName ?? undefined);
+      } catch (err) {
+        console.error('[customerController] error sending verification email:', (err as Error).message);
+      }
+    }
+
     res.json({ ok: true, data: updated });
+  },
+
+  // POST /customer/profile/send-email-verification — resend verification for current user
+  sendEmailVerification: async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.email) return res.status(400).json({ ok: false, message: 'No email configured' });
+    if (user.emailVerified) return res.json({ ok: true, message: 'Email already verified' });
+
+    const { createEmailVerification } = await import('../services/emailVerificationService');
+    const { sendVerificationEmail } = await import('../services/emailService');
+    try {
+      const token = await createEmailVerification(userId, user.email);
+      await sendVerificationEmail(user.email, token, user.fullName ?? undefined);
+      res.json({ ok: true, message: 'Verification email sent' });
+    } catch (err) {
+      console.error('[customerController] resend error:', (err as Error).message);
+      res.status(500).json({ ok: false, message: 'Could not send verification email' });
+    }
+  },
+
+  // POST /customer/profile/verify-email — verify token (public)
+  verifyEmail: async (req: Request, res: Response) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ ok: false, message: 'Missing token' });
+    const { verifyEmailToken } = await import('../services/emailVerificationService');
+    const result = await verifyEmailToken(token);
+    if (!result.ok) return res.status(400).json({ ok: false, message: result.reason });
+    res.json({ ok: true, message: 'Email verified' });
   },
 
   getNotifications: async (req: Request, res: Response) => {
