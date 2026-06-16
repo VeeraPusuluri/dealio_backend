@@ -132,6 +132,14 @@ export const customerController = {
     const current = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
     const newEmail = (email || null) as string | null;
 
+    // If the new email is already used by another account, fail with a 400
+    if (newEmail) {
+      const conflict = await prisma.user.findUnique({ where: { email: newEmail } });
+      if (conflict && conflict.id !== userId) {
+        return res.status(400).json({ ok: false, message: 'Email already in use' });
+      }
+    }
+
     // If email changed, mark unverified and send verification email
     const updated = await prisma.user.update({
       where: { id: userId },
