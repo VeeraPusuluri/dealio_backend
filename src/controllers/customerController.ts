@@ -188,6 +188,7 @@ export const customerController = {
     const { verifyEmailToken } = await import('../services/emailVerificationService');
     const result = await verifyEmailToken(token);
     if (!result.ok) return res.status(400).json({ ok: false, message: result.reason });
+    if (result.userId === undefined) return res.status(400).json({ ok: false, message: 'Invalid token' });
 
     // Return updated user data so frontend can update UI immediately
     const user = await prisma.user.findUnique({
