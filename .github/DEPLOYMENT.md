@@ -1,10 +1,8 @@
 # Deployment setup — Backend (EC2 via ECR)
 
-CI builds the Docker image, pushes it to **Amazon ECR**, then deploys to **EC2**
-via **AWS SSM Run Command** (keyless — no SSH key, no inbound port 22). The SSM
-agent on the box runs `docker compose up -d`, pulling from ECR with the
-instance's IAM role. Auth to AWS uses **GitHub OIDC** (no long-lived keys).
-Triggers: push to `main`, or manual run.
+CI builds the Docker image, pushes it to **Amazon ECR**, then SSHes into the
+**EC2** instance and runs `docker compose up -d`. Auth to AWS uses **GitHub
+OIDC** (no long-lived keys). Triggers: push to `main`, or manual run.
 
 Account `687159379528`, region `us-east-1`.
 
@@ -45,8 +43,7 @@ aws iam create-open-id-connect-provider \
 }
 ```
 
-`deploy-policy.json` (ECR push for backend + Amplify trigger for frontend +
-SSM deploy):
+`deploy-policy.json` (ECR push for backend + Amplify trigger for frontend):
 
 ```json
 {
@@ -58,11 +55,7 @@ SSM deploy):
         "ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload",
         "ecr:DescribeRepositories", "ecr:CreateRepository"
       ], "Resource": "*" },
-    { "Sid": "AmplifyDeploy", "Effect": "Allow", "Action": ["amplify:StartJob", "amplify:GetJob"], "Resource": "*" },
-    { "Sid": "SSMDeploy", "Effect": "Allow", "Action": [
-        "ssm:SendCommand", "ssm:GetCommandInvocation", "ssm:ListCommandInvocations",
-        "ssm:DescribeInstanceInformation"
-      ], "Resource": "*" }
+    { "Sid": "AmplifyDeploy", "Effect": "Allow", "Action": ["amplify:StartJob", "amplify:GetJob"], "Resource": "*" }
   ]
 }
 ```
@@ -94,26 +87,22 @@ aws iam put-role-policy --role-name dealio-github-deploy \
    ```
    Ubuntu: install `docker.io`, the `docker-compose-plugin`, and `awscli`.
 
-2. **Let the instance pull from ECR and be managed by SSM** — attach an IAM
-   **instance role** with `AmazonEC2ContainerRegistryReadOnly` **and**
-   `AmazonSSMManagedInstanceCore` (here: role `dealio-ec2-ecr-role` via instance
-   profile `dealio-ec2-ecr-profile`). AL2023 ships the SSM agent; it registers a
-   few minutes after the role is attached. Verify with:
+2. **Let the instance pull from ECR** — attach an IAM **instance role** with the
+   managed policy `AmazonEC2ContainerRegistryReadOnly` to the EC2 instance.
+
+3. **Create the app dir + runtime env file**
    ```bash
-   aws ssm describe-instance-information --region us-east-1 \
-     --filters "Key=InstanceIds,Values=<instance-id>"
+   mkdir -p ~/dealio-backend/uploads
+   cd ~/dealio-backend
+   # create .env with the production values the app reads at runtime:
+   #   DATABASE_URL, JWT_SECRET, GOOGLE_CLIENT_ID, SMTP_*, WHATSAPP_*,
+   #   ANTHROPIC_API_KEY, TWILIO_*/MSG91_*, etc.
+   vi .env
    ```
+   The workflow copies `docker-compose.yml` here on each deploy.
 
-3. **Create the runtime env file** at `/home/ec2-user/dealio-backend/.env` with
-   the production values the app reads (`DATABASE_URL`, `JWT_SECRET`,
-   `GOOGLE_CLIENT_ID`, `SMTP_*`, `WHATSAPP_*`, `ANTHROPIC_API_KEY`,
-   `TWILIO_*`/`MSG91_*`, …). The deploy writes `docker-compose.yml` itself, so
-   `.env` is the only file you must place. The box also needs Docker + the
-   compose plugin installed.
-
-4. **Security group** — with SSM you do **not** need inbound `22`. Only open
-   inbound `8090` if you want to reach the app directly (or front it with an ALB).
-   Outbound `443` must be open for ECR + SSM.
+4. **Security group** — allow inbound `8090` (and whatever your reverse proxy /
+   load balancer needs). Outbound 443 must be open for ECR pulls.
 
 ---
 
@@ -124,7 +113,10 @@ Settings → Secrets and variables → Actions → **New repository secret**:
 | Secret | Value |
 |---|---|
 | `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::687159379528:role/dealio-github-deploy` |
-| `EC2_INSTANCE_ID` | target instance id, e.g. `i-030031e5bd44ee410` |
+| `EC2_HOST` | EC2 public IP or DNS |
+| `EC2_USER` | `ec2-user` (Amazon Linux) or `ubuntu` |
+| `EC2_SSH_KEY` | the **private** key (full PEM contents) for the instance key pair |
+| `EC2_SSH_PORT` | *(optional)* defaults to `22` |
 
 ---
 
