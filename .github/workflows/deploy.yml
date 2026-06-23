@@ -1,0 +1,112 @@
+name: Deploy Backend (EC2)
+
+# Builds the Docker image in CI, pushes it to Amazon ECR, then SSHes into the
+# EC2 instance to pull the new image and restart via docker compose.
+#
+# Required GitHub secrets (Settings -> Secrets and variables -> Actions):
+#   AWS_DEPLOY_ROLE_ARN  arn of the IAM role assumed via OIDC (see .github/DEPLOYMENT.md)
+#   EC2_HOST             public IP / DNS of the EC2 instance
+#   EC2_USER             ssh user (e.g. ec2-user or ubuntu)
+#   EC2_SSH_KEY          private key (PEM) matching the instance key pair
+#   EC2_SSH_PORT         (optional) ssh port, defaults to 22
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write   # required for AWS OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: dealio-backend
+
+jobs:
+  build-and-push:
+    name: Build & push image to ECR
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.uri }}
+      registry: ${{ steps.ecr.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION" \
+            || aws ecr create-repository --repository-name "$ECR_REPOSITORY" --region "$AWS_REGION"
+
+      - name: Build, tag and push image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY"
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+          echo "uri=$IMAGE:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to EC2
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy docker-compose.yml to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
+          source: docker-compose.yml
+          target: /home/${{ secrets.EC2_USER }}/dealio-backend
+
+      - name: Pull image and restart on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
+          envs: ECR_IMAGE,ECR_REGISTRY,AWS_REGION,APP_DIR
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "$APP_DIR"
+
+            # Authenticate Docker to ECR using the instance's IAM role
+            aws ecr get-login-password --region "$AWS_REGION" \
+              | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+            export ECR_IMAGE="$ECR_IMAGE"
+            docker compose pull
+            docker compose up -d
+
+            # Sync the database schema (project uses `prisma db push`, no migration files)
+            docker compose run --rm app npx prisma db push --skip-generate
+
+            docker image prune -f
+        env:
+          ECR_IMAGE: ${{ needs.build-and-push.outputs.image }}
+          ECR_REGISTRY: ${{ needs.build-and-push.outputs.registry }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          APP_DIR: /home/${{ secrets.EC2_USER }}/dealio-backend

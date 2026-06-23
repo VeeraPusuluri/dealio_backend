@@ -1,0 +1,23 @@
+# Runs the backend on the EC2 instance. The image is pulled from ECR; the tag
+# is injected by the GitHub Actions deploy job via the ECR_IMAGE env var.
+# Runtime config is read from a `.env` file placed next to this file on the box
+# (DATABASE_URL, JWT_SECRET, SMTP_*, WHATSAPP_*, ANTHROPIC_API_KEY, etc.).
+services:
+  app:
+    image: ${ECR_IMAGE}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "8090"
+    ports:
+      - "8090:8090"
+    volumes:
+      # Persist uploaded files across container restarts/redeploys
+      - ./uploads:/app/uploads
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
