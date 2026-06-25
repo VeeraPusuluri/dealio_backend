@@ -1,6 +1,10 @@
 node_modules
-# Keep environment variables out of version control
+# Environment variables — NEVER commit. Real secrets belong in AWS Secrets
+# Manager / SSM (runtime) and GitHub Secrets (CI auth). Only the no-secrets
+# template `.env.example` is allowed in git.
 .env
+.env.*
+!.env.example
 
 /src/generated/prisma
 
@@ -9,5 +13,7 @@ dist/
 .serverless/
 dealio-backkend/
 .idea/
+.junie/
 *.zip
+*.rdb
 .DS_Store
