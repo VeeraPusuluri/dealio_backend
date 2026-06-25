@@ -1,21 +1,32 @@
-name: Deploy Backend (EC2)
+name: Deploy Backend (EC2 · dev/prod)
 
-# Builds the Docker image in CI, pushes it to Amazon ECR, then SSHes into the
-# EC2 instance to pull the new image and restart via docker compose.
+# Branch-based deploys to two environments on the SAME codebase:
+#   push to `integration` -> GitHub Environment `dev`  -> the dev  EC2 box -> dev  RDS
+#   push to `main`        -> GitHub Environment `prod` -> the prod EC2 box -> prod RDS
 #
-# Required GitHub secrets (Settings -> Secrets and variables -> Actions):
-#   AWS_DEPLOY_ROLE_ARN  arn of the IAM role assumed via OIDC (see .github/DEPLOYMENT.md)
-#   EC2_HOST             public IP / DNS of the EC2 instance
-#   EC2_USER             ssh user (e.g. ec2-user or ubuntu)
-#   EC2_SSH_KEY          private key (PEM) matching the instance key pair
+# How env separation works:
+#   * The environment name is derived from the branch (main -> prod, else dev).
+#   * `environment:` on each job pulls env-scoped values from GitHub Environments
+#     (Settings -> Environments -> dev / prod), so EC2_HOST/EC2_SSH_KEY/etc.
+#     resolve to the right box automatically.
+#   * Images are tagged `<env>-<sha>` and `<env>-latest` in one ECR repo.
+#   * Runtime secrets are NOT in git or in CI: the box renders `.env` from AWS
+#     SSM Parameter Store (/dealio/<env>/backend/*) using its instance IAM role.
+#
+# GitHub Environment secrets (per env: dev AND prod) — see .github/DEPLOYMENT.md:
+#   AWS_DEPLOY_ROLE_ARN  IAM role assumed via OIDC (ECR push)
+#   EC2_HOST             public IP / DNS of that env's EC2 instance
+#   EC2_USER             ssh user (e.g. ubuntu)
+#   EC2_SSH_KEY          private key (PEM) for that instance
 #   EC2_SSH_PORT         (optional) ssh port, defaults to 22
 
 on:
   push:
-    branches: [main]
+    branches: [main, integration]
   workflow_dispatch:
 
 concurrency:
+  # one in-flight deploy per branch/env
   group: deploy-backend-${{ github.ref }}
   cancel-in-progress: true
 
@@ -29,13 +40,19 @@ env:
 
 jobs:
   build-and-push:
-    name: Build & push image to ECR
+    name: Build & push (${{ github.ref_name == 'main' && 'prod' || 'dev' }})
     runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     outputs:
       image: ${{ steps.image.outputs.uri }}
       registry: ${{ steps.ecr.outputs.registry }}
+      env_name: ${{ steps.vars.outputs.env_name }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve environment name from branch
+        id: vars
+        run: echo "env_name=${{ github.ref_name == 'main' && 'prod' || 'dev' }}" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -56,17 +73,19 @@ jobs:
         id: image
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
+          ENV_NAME: ${{ steps.vars.outputs.env_name }}
         run: |
           IMAGE="$REGISTRY/$ECR_REPOSITORY"
-          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
-          docker push "$IMAGE:${{ github.sha }}"
-          docker push "$IMAGE:latest"
-          echo "uri=$IMAGE:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          docker build -t "$IMAGE:${ENV_NAME}-${{ github.sha }}" -t "$IMAGE:${ENV_NAME}-latest" .
+          docker push "$IMAGE:${ENV_NAME}-${{ github.sha }}"
+          docker push "$IMAGE:${ENV_NAME}-latest"
+          echo "uri=$IMAGE:${ENV_NAME}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
   deploy:
-    name: Deploy to EC2
+    name: Deploy (${{ needs.build-and-push.outputs.env_name }})
     needs: build-and-push
     runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,33 +99,44 @@ jobs:
           source: docker-compose.yml
           target: /home/${{ secrets.EC2_USER }}/dealio-backend
 
-      - name: Pull image and restart on EC2
+      - name: Render .env from SSM, pull image, restart on EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ secrets.EC2_SSH_PORT || 22 }}
-          envs: ECR_IMAGE,ECR_REGISTRY,AWS_REGION,APP_DIR
+          envs: ECR_IMAGE,ECR_REGISTRY,AWS_REGION,APP_DIR,ENV_NAME
           script_stop: true
           script: |
             set -euo pipefail
             cd "$APP_DIR"
 
-            # Authenticate Docker to ECR using the instance's IAM role
+            # 1) Auth Docker to ECR using the instance's IAM role
             aws ecr get-login-password --region "$AWS_REGION" \
-              | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+              | sudo docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
+            # 2) Render runtime .env from SSM Parameter Store (env-scoped, decrypted
+            #    via the instance role). Secrets never touch git or the CI runner.
+            aws ssm get-parameters-by-path \
+              --path "/dealio/${ENV_NAME}/backend/" --with-decryption --recursive \
+              --region "$AWS_REGION" --query 'Parameters[].[Name,Value]' --output text \
+              | while IFS=$'\t' read -r name value; do printf '%s=%s\n' "${name##*/}" "$value"; done > .env
+            chmod 600 .env
+            test -s .env || { echo "ERROR: no SSM params under /dealio/${ENV_NAME}/backend/"; exit 1; }
+
+            # 3) Pull the freshly built image and (re)start
             export ECR_IMAGE="$ECR_IMAGE"
-            docker compose pull
-            docker compose up -d
+            sudo ECR_IMAGE="$ECR_IMAGE" docker compose pull
+            sudo ECR_IMAGE="$ECR_IMAGE" docker compose up -d
 
-            # Sync the database schema (project uses `prisma db push`, no migration files)
-            docker compose run --rm app npx prisma db push --skip-generate
+            # 4) Sync DB schema (project uses `prisma db push`, no migration files)
+            sudo ECR_IMAGE="$ECR_IMAGE" docker compose run --rm app npx prisma db push --skip-generate
 
-            docker image prune -f
+            sudo docker image prune -f
         env:
           ECR_IMAGE: ${{ needs.build-and-push.outputs.image }}
           ECR_REGISTRY: ${{ needs.build-and-push.outputs.registry }}
-          AWS_REGION: ${{ env.AWS_REGION }}
+          AWS_REGION: us-east-1
           APP_DIR: /home/${{ secrets.EC2_USER }}/dealio-backend
+          ENV_NAME: ${{ needs.build-and-push.outputs.env_name }}
