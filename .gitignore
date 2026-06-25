@@ -17,3 +17,9 @@ dealio-backkend/
 *.zip
 *.rdb
 .DS_Store
+
+# Terraform (keep .terraform.lock.hcl tracked; never commit state — it holds secrets)
+infra/terraform/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan

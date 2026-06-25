@@ -3,6 +3,7 @@ import { randomInt, timingSafeEqual } from 'crypto';
 import prisma from '../utils/prisma';
 import { sendOtpSms, smsProviderConfigured } from './smsService';
 import { sendWhatsAppOtp, WHATSAPP_ENABLED } from './whatsapp';
+import { otpStore } from './otpStore';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dealio-secret-key-12345';
 
@@ -13,32 +14,9 @@ const MAX_SENDS_PER_PHONE = 5;   // per phone per hour
 const MAX_SENDS_PER_IP = 15;     // per IP per hour
 const MAX_VERIFY_ATTEMPTS = 5;
 
-interface OtpEntry {
-  code: string;
-  expiresAt: number;
-  attempts: number;
-}
-
-// Single-instance in-memory state. If the backend ever scales past one
-// instance, both maps must move to shared storage (DB/Redis).
-const otps = new Map<string, OtpEntry>();
-const sendLog = new Map<string, number[]>(); // "phone:<n>" / "ip:<addr>" -> send timestamps
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of otps) if (entry.expiresAt < now) otps.delete(key);
-  for (const [key, hits] of sendLog) {
-    const recent = hits.filter(t => now - t < SEND_WINDOW_MS);
-    if (recent.length === 0) sendLog.delete(key);
-    else sendLog.set(key, recent);
-  }
-}, 10 * 60 * 1000).unref();
-
-function recentHits(key: string, now: number): number[] {
-  const hits = (sendLog.get(key) ?? []).filter(t => now - t < SEND_WINDOW_MS);
-  sendLog.set(key, hits);
-  return hits;
-}
+// OTP codes and send rate-limit counters live in `otpStore` (Redis when
+// REDIS_URL is set, in-memory otherwise) so they survive restarts and are
+// shared across instances. See services/otpStore.ts.
 
 function maskPhone(e164: string): string {
   return e164.length <= 4 ? e164 : e164.slice(0, 3) + '*'.repeat(e164.length - 7) + e164.slice(-4);
@@ -70,29 +48,30 @@ export type VerifyOtpResult =
 
 export const authService = {
   sendOtp: async (phone: string, opts?: { countryCode?: string | undefined; ip?: string | undefined }): Promise<SendOtpResult> => {
-    const now = Date.now();
+    const phoneKey = `phone:${phone}`;
+    const ipKey = opts?.ip ? `ip:${opts.ip}` : null;
 
-    const phoneHits = recentHits(`phone:${phone}`, now);
-    const lastSend = phoneHits[phoneHits.length - 1];
-    if (lastSend && now - lastSend < RESEND_COOLDOWN_MS) {
-      const wait = Math.ceil((RESEND_COOLDOWN_MS - (now - lastSend)) / 1000);
+    const cooldown = await otpStore.cooldownRemainingMs(phoneKey);
+    if (cooldown > 0) {
+      const wait = Math.ceil(cooldown / 1000);
       return { success: false, status: 429, message: `Please wait ${wait}s before requesting another code.` };
     }
-    if (phoneHits.length >= MAX_SENDS_PER_PHONE) {
+    if (await otpStore.sendCount(phoneKey) >= MAX_SENDS_PER_PHONE) {
       return { success: false, status: 429, message: 'Too many codes requested for this number. Please try again later.' };
     }
-    const ipHits = opts?.ip ? recentHits(`ip:${opts.ip}`, now) : [];
-    if (opts?.ip && ipHits.length >= MAX_SENDS_PER_IP) {
+    if (ipKey && (await otpStore.sendCount(ipKey)) >= MAX_SENDS_PER_IP) {
       return { success: false, status: 429, message: 'Too many requests. Please try again later.' };
     }
 
     const code = randomInt(100000, 1000000).toString();
     const e164 = toE164(phone, opts?.countryCode);
 
-    // Count the send before delivery so failed provider calls still consume quota
-    phoneHits.push(now);
-    if (opts?.ip) ipHits.push(now);
-    otps.set(phone, { code, expiresAt: now + OTP_TTL_MS, attempts: 0 });
+    // Count the send and start the cooldown before delivery so failed provider
+    // calls still consume quota (and can't be retried instantly).
+    await otpStore.startCooldown(phoneKey, RESEND_COOLDOWN_MS);
+    await otpStore.recordSend(phoneKey, SEND_WINDOW_MS);
+    if (ipKey) await otpStore.recordSend(ipKey, SEND_WINDOW_MS);
+    await otpStore.saveOtp(phone, code, OTP_TTL_MS);
 
     // Delivery preference: WhatsApp → SMS → console mock. A WhatsApp failure
     // (e.g. the number has no WhatsApp account or isn't in the allowed list) falls through to SMS when a
@@ -109,10 +88,10 @@ export const authService = {
       // If no SMS provider is configured, allow a non-production demo fallback so devs can continue.
       if (!smsProviderConfigured()) {
         if (!isProduction()) {
-          otps.delete(phone);
+          await otpStore.clearOtp(phone);
           return { success: true, message: 'OTP (dev demo)', maskedPhone: maskPhone(e164), demoCode: code };
         }
-        otps.delete(phone);
+        await otpStore.clearOtp(phone);
         return { success: false, status: 502, message: 'Could not send the code on WhatsApp. Please try again.' };
       }
     }
@@ -121,7 +100,7 @@ export const authService = {
       try {
         await sendOtpSms(e164, code);
       } catch (err) {
-        otps.delete(phone);
+        await otpStore.clearOtp(phone);
         console.error(`[AuthService] SMS send failed for ${maskPhone(e164)}:`, err);
         return { success: false, status: 502, message: 'Could not send the verification code. Please try again.' };
       }
@@ -148,20 +127,18 @@ export const authService = {
     otp: string,
     userData?: { fullName?: string; role?: string }
   ): Promise<VerifyOtpResult> => {
-    const entry = otps.get(phone);
-
     // Dev/test convenience only: the legacy constant code keeps the demo-skip
     // flow and local testing working. Never accepted in production.
     const devBypass = !isProduction() && otp === '123456';
 
     if (!devBypass) {
-      if (!entry || entry.expiresAt < Date.now()) {
-        otps.delete(phone);
+      const entry = await otpStore.readOtp(phone);
+      if (!entry) {
         return { success: false, message: 'Code expired or not requested. Please request a new code.' };
       }
-      entry.attempts += 1;
-      if (entry.attempts > MAX_VERIFY_ATTEMPTS) {
-        otps.delete(phone);
+      const attempts = await otpStore.bumpAttempts(phone);
+      if (attempts > MAX_VERIFY_ATTEMPTS) {
+        await otpStore.clearOtp(phone);
         return { success: false, message: 'Too many incorrect attempts. Please request a new code.' };
       }
       const expected = Buffer.from(entry.code);
@@ -170,7 +147,7 @@ export const authService = {
         return { success: false, message: 'Invalid OTP' };
       }
     }
-    otps.delete(phone);
+    await otpStore.clearOtp(phone);
 
     let user = await prisma.user.findUnique({
       where: { phone }

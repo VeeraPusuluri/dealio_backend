@@ -1,0 +1,14 @@
+// Copy to terraform.tfvars and adjust. Every value already has a sensible
+// default pointing at the existing account, so you can also just run with none.
+
+aws_region = "us-east-1"
+
+// Lock SSH down to your IP (strongly recommended):
+# admin_ssh_cidr = "203.0.113.7/32"
+
+// ── HTTPS: leave blank until you own a domain ───────────────────────────────
+// Once you have one (e.g. registered in Route 53):
+# domain_name     = "dealio.app"
+# prod_host       = "api.dealio.app"
+# dev_host        = "api-dev.dealio.app"
+# route53_zone_id = "Z0123456789ABCDEFGHIJ"   # enables automatic cert validation

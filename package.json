@@ -8,7 +8,7 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
     "test": "jest",
-    "migrate": "node scripts/init-db.js && prisma db push",
+    "migrate": "node -r dotenv/config scripts/init-db.js && prisma db push",
     "migrate:deploy": "prisma migrate deploy"
   },
   "keywords": [],
@@ -23,6 +23,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "google-auth-library": "^10.6.2",
+    "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
     "multer": "^2.1.1",

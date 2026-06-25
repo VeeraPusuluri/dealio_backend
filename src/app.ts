@@ -9,9 +9,11 @@ import customerRoutes from './routes/customerRoutes';
 import cpRoutes from './routes/cpRoutes';
 import aiRoutes from './routes/aiRoutes';
 import adminRoutes from './routes/adminRoutes';
+import whatsappRoutes from './routes/whatsappRoutes';
 
 dotenv.config();
 
+//const serverless = require('serverless-http');
 const app = express();
 
 // Behind a TLS-terminating proxy (e.g. AWS ALB) req.protocol must resolve to https,
@@ -24,6 +26,11 @@ app.use(cors({
     : true,            // allow all in dev / when not set
   credentials: true,
 }));
+
+// WhatsApp webhook is mounted BEFORE express.json() so its POST handler receives
+// the raw request body required to verify Meta's X-Hub-Signature-256 header.
+app.use('/api/whatsapp', whatsappRoutes);
+
 app.use(express.json());
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 // morgan is noisy in tests, maybe skip it or use a different format
@@ -45,5 +52,7 @@ app.use('/api/customer', customerRoutes);
 app.use('/api/cp', cpRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/admin', adminRoutes);
+
+//module.exports.handler = serverless(app);
 
 export default app;
