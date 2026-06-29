@@ -26,6 +26,8 @@ model User {
   unitShortlists     UnitShortlist[]     @relation("CustomerShortlists")
   emailVerifications EmailVerification[]
   sessions           Session[]
+  cpAssignments      CustomerCpAssignment[]
+  deletionRequests   AccountDeletionRequest[]
 }
 
 // A logged-in device/session. The JWT carries this row's `jti`; the auth
@@ -145,6 +147,7 @@ model Project {
   documents            Document[]
   shareLinks           ProjectShareLink[]
   unitShortlists       UnitShortlist[]
+  cpAssignments        CustomerCpAssignment[]
 }
 
 model UnitShortlist {
@@ -330,6 +333,7 @@ model ChannelPartner {
   shareLinks        ProjectShareLink[]
   followUps         CPFollowUp[]
   callLogs          CPCallLog[]
+  customerAssignments CustomerCpAssignment[]
   createdAt         DateTime           @default(now())
 }
 
@@ -398,6 +402,40 @@ model ProjectUpdate {
   visibleTo String   @default("ALL")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Locks a customer to one channel partner per project for a fixed window (90 days).
+// Created when a CP registers a deal/lead or a customer books a meeting via a CP.
+// A different CP attempting a deal on the same (customer, project) while an active
+// row exists is rejected. Expired rows (expiresAt <= now) no longer lock.
+model CustomerCpAssignment {
+  id         Int            @id @default(autoincrement())
+  customerId Int
+  customer   User           @relation(fields: [customerId], references: [id])
+  cpId       Int
+  cp         ChannelPartner @relation(fields: [cpId], references: [id])
+  projectId  Int
+  project    Project        @relation(fields: [projectId], references: [id])
+  createdAt  DateTime       @default(now())
+  expiresAt  DateTime
+
+  @@index([customerId, projectId])
+}
+
+// A user's request to delete their account. Admin reviews; approval anonymizes
+// and disables the user (PII scrubbed, sessions revoked) while keeping financial
+// records (deals/commissions/meetings) intact.
+model AccountDeletionRequest {
+  id          Int       @id @default(autoincrement())
+  userId      Int
+  user        User      @relation(fields: [userId], references: [id])
+  reason      String?
+  status      String    @default("pending") // pending | approved | rejected
+  requestedAt DateTime  @default(now())
+  reviewedAt  DateTime?
+  reviewedBy  Int?
+
+  @@index([status])
 }
 
 // Email verification tokens for user-provided addresses

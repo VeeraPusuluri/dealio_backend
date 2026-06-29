@@ -6,6 +6,7 @@ import { threadKey } from '../utils/thread';
 import PDFDocument from 'pdfkit';
 import { generateICS } from '../services/calendarService';
 import { sendCalendarInvite } from '../services/emailService';
+import { assignCustomerToCp } from '../services/cpAssignment';
 
 const DEAL_STATUS_NORM: Record<string, string> = {
   'new lead': 'New Lead', 'profile created': 'Profile Created',
@@ -16,6 +17,18 @@ const DEAL_STATUS_NORM: Record<string, string> = {
 };
 function normalizeDealStatus(s: string): string {
   return DEAL_STATUS_NORM[s.toLowerCase().trim()] ?? s;
+}
+
+// Privacy: a builder must never see or call the customer's phone — only the
+// channel partner brokers contact. These builder-facing controllers are mounted
+// under both /api/builder (builder) and /api/portal (customer), so we mask only
+// when the *requester* is a builder; customers/CPs still get the real number.
+function isBuilderRequest(req: Request): boolean {
+  return req.user?.role === 'BUILDER';
+}
+// Returns the customer phone for the requester, or '' for a builder.
+function customerPhoneFor(req: Request, phone: string | null | undefined): string {
+  return isBuilderRequest(req) ? '' : (phone ?? '');
 }
 
 // Maps DB column names (priceFrom/priceTo) to the frontend's expected names (priceMin/priceMax)
@@ -363,7 +376,8 @@ export const builderController = {
     const leads = deals.map(d => ({
       id:           String(d.id),
       customerName: d.customer?.fullName ?? 'Unknown',
-      phone:        d.customer?.phone ?? '',
+      phone:        customerPhoneFor(req, d.customer?.phone),
+      phoneHidden:  isBuilderRequest(req),
       email:        d.customer?.email ?? '',
       projectId:    String(d.projectId),
       projectName:  d.project?.name ?? '',
@@ -767,6 +781,12 @@ export const builderController = {
       include: { project: { select: { name: true } } }
     });
 
+    // A meeting booked through a CP locks the customer to that CP for 90 days
+    // (best-effort — meeting booking is never blocked by an existing lock).
+    if (cpId && meetingData.projectId) {
+      await assignCustomerToCp(cpId, customer.id, Number(meetingData.projectId)).catch(() => {});
+    }
+
     const projectName = newMeeting.project?.name ?? 'your project';
     const ts = new Date().toISOString();
 
@@ -935,9 +955,11 @@ export const builderController = {
         const location = [meeting.project?.address, meeting.project?.city]
           .filter(Boolean).join(', ') || projectName;
 
+        // The builder is the ICS organizer, so the shared description must not
+        // expose the customer's phone — only the CP brokers contact.
         const description =
           `Site visit for ${projectName}\n` +
-          `Customer: ${customerName} (${meeting.customerPhone})\n` +
+          `Customer: ${customerName}\n` +
           (meeting.meetingType ? `Type: ${meeting.meetingType}\n` : '') +
           (meeting.notes ? `Notes: ${meeting.notes}` : '');
 
@@ -1066,7 +1088,8 @@ export const builderController = {
       updatedAt: d.updatedAt,
       customerId: d.customerId,
       customerName: d.customer?.fullName ?? 'Unknown',
-      customerPhone: d.customer?.phone ?? '',
+      customerPhone: customerPhoneFor(req, d.customer?.phone),
+      phoneHidden: isBuilderRequest(req),
       customerEmail: d.customer?.email ?? null,
       projectId: d.projectId,
       projectName: d.project?.name ?? 'Unknown Project',
@@ -1101,6 +1124,8 @@ export const builderController = {
 
     const mapped = meetings.map(m => ({
       ...m,
+      customerPhone: customerPhoneFor(req, m.customerPhone),
+      phoneHidden: isBuilderRequest(req),
       projectName: m.project?.name ?? 'Unknown Project',
       cpName:   (m as any).cpId ? (cpMap[(m as any).cpId]?.name   ?? null) : null,
       cpUserId: (m as any).cpId ? (cpMap[(m as any).cpId]?.userId ?? null) : null,
@@ -1587,7 +1612,8 @@ export const builderController = {
       projectId: l.deal?.project?.id ?? l.projectId,
       projectName: l.deal?.project?.name ?? 'Unknown Project',
       customerName: l.customer?.fullName ?? 'Customer',
-      customerPhone: l.customer?.phone ?? '',
+      customerPhone: customerPhoneFor(req, l.customer?.phone),
+      phoneHidden: isBuilderRequest(req),
       customerEmail: l.customer?.email ?? '',
       employmentType: l.employmentType,
       loanAmount: l.loanAmount,
@@ -1766,7 +1792,8 @@ export const builderController = {
     res.json({ ok: true, data: shortlists.map(s => ({
       ...s,
       customerName: (s.customer as any)?.fullName ?? 'Customer',
-      customerPhone: (s.customer as any)?.phone ?? '',
+      customerPhone: customerPhoneFor(req, (s.customer as any)?.phone),
+      phoneHidden: isBuilderRequest(req),
       projectName: (s.project as any)?.name ?? 'Unknown',
       customer: undefined, project: undefined,
     })) });
@@ -1853,7 +1880,8 @@ export const builderController = {
     res.json({ ok: true, data: {
       ...deal,
       customerName:  (deal.customer as any)?.fullName ?? 'Unknown',
-      customerPhone: (deal.customer as any)?.phone ?? '',
+      customerPhone: customerPhoneFor(req, (deal.customer as any)?.phone),
+      phoneHidden:   isBuilderRequest(req),
       projectName:   (deal.project as any)?.name ?? 'Unknown',
       cpName:        (deal.cp as any)?.user?.fullName ?? null,
       cpPhone:       (deal.cp as any)?.user?.phone ?? null,

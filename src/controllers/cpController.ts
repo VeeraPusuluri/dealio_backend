@@ -4,6 +4,7 @@ import prisma from '../utils/prisma';
 import { channelManager } from '../services/channelManager';
 import { notifyDealParties } from '../services/dealNotify';
 import { threadKey } from '../utils/thread';
+import { assertCpMayDeal, assignCustomerToCp, CpAssignmentError } from '../services/cpAssignment';
 
 // In-memory OTP store for phone verification (dev-only)
 const phoneOtpStore: Record<string, { otp: string; expiresAt: number }> = {};
@@ -362,6 +363,17 @@ export const cpController = {
       });
     }
 
+    // Enforce the 90-day CP↔customer lock: a different CP cannot deal this
+    // customer on this project while another CP's assignment is active.
+    try {
+      await assertCpMayDeal(cp.id, customer.id, project.id);
+    } catch (err) {
+      if (err instanceof CpAssignmentError) {
+        return res.status(err.status).json({ ok: false, message: err.message });
+      }
+      throw err;
+    }
+
     const existingDeal = await prisma.deal.findFirst({
       where: { projectId: project.id, customerId: customer.id, builderId: project.builderId },
     });
@@ -383,6 +395,9 @@ export const cpController = {
         },
       });
     }
+
+    // Lock this customer to this CP for this project for 90 days.
+    await assignCustomerToCp(cp.id, customer.id, project.id);
 
     // Notify the builder
     if (project.builder?.userId) {

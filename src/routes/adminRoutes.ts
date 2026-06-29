@@ -29,5 +29,7 @@ router.post('/loan-cases/:id/notes',          adminController.addLoanCaseNote);
 router.get('/meetings',                       adminController.getMeetings);
 router.get('/contact',                        adminController.getContactRequests);
 router.patch('/contact/:id/status',           adminController.updateContactStatus);
+router.get('/deletion-requests',              adminController.getDeletionRequests);
+router.patch('/deletion-requests/:id',        adminController.reviewDeletionRequest);
 
 export default router;

@@ -249,4 +249,30 @@ export const authController = {
       res.status(500).json({ ok: false, message: 'Internal server error during Google sign-in' });
     }
   },
+
+  // Authenticated user requests deletion of their own account. Admin reviews it
+  // later; approval anonymizes & disables the account.
+  requestAccountDeletion: async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+    const { reason } = req.body ?? {};
+    const existing = await prisma.accountDeletionRequest.findFirst({ where: { userId, status: 'pending' } });
+    if (existing) {
+      res.json({ ok: true, message: 'A deletion request is already pending review.', data: existing });
+      return;
+    }
+    const created = await prisma.accountDeletionRequest.create({
+      data: { userId, reason: typeof reason === 'string' && reason.trim() ? reason.trim().slice(0, 1000) : null },
+    });
+    res.json({ ok: true, message: 'Your account deletion request has been submitted for review.', data: created });
+  },
+
+  // The current user's latest deletion request (so the UI can reflect pending state).
+  getMyDeletionRequest: async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+    const latest = await prisma.accountDeletionRequest.findFirst({
+      where: { userId },
+      orderBy: { requestedAt: 'desc' },
+    });
+    res.json({ ok: true, data: latest });
+  },
 };

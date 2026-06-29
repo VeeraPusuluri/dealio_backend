@@ -17,4 +17,8 @@ router.delete('/sessions/:id', requireAuth, sessionController.revoke);
 router.delete('/sessions', requireAuth, sessionController.revokeOthers);
 router.post('/logout', requireAuth, sessionController.logout);
 
+// Account deletion request (user submits; admin reviews in the admin portal)
+router.post('/account/deletion-request', requireAuth, authController.requestAccountDeletion);
+router.get('/account/deletion-request', requireAuth, authController.getMyDeletionRequest);
+
 export default router;

@@ -626,4 +626,66 @@ export const adminController = {
     }));
     res.json({ ok: true, data: mapped });
   },
+
+  // ── Account deletion requests ─────────────────────────────────────────────
+
+  getDeletionRequests: async (_req: Request, res: Response) => {
+    const requests = await prisma.accountDeletionRequest.findMany({
+      orderBy: [{ status: 'asc' }, { requestedAt: 'desc' }],
+      include: {
+        user: { select: { id: true, fullName: true, phone: true, email: true, role: true, createdAt: true } },
+      },
+    });
+    res.json({ ok: true, data: requests });
+  },
+
+  // Approve (anonymize & disable the account, keep financial records) or reject.
+  reviewDeletionRequest: async (req: Request, res: Response) => {
+    if (req.user?.role !== 'ADMIN') {
+      return res.status(403).json({ ok: false, message: 'Admin access required' });
+    }
+    const id = Number(req.params.id);
+    const { action } = req.body as { action?: 'approve' | 'reject' };
+    if (action !== 'approve' && action !== 'reject') {
+      return res.status(400).json({ ok: false, message: "action must be 'approve' or 'reject'" });
+    }
+
+    const request = await prisma.accountDeletionRequest.findUnique({ where: { id } });
+    if (!request) return res.status(404).json({ ok: false, message: 'Request not found' });
+    if (request.status !== 'pending') {
+      return res.status(409).json({ ok: false, message: 'This request has already been reviewed.' });
+    }
+
+    if (action === 'reject') {
+      const updated = await prisma.accountDeletionRequest.update({
+        where: { id },
+        data: { status: 'rejected', reviewedAt: new Date(), reviewedBy: req.user!.id },
+      });
+      return res.json({ ok: true, message: 'Request rejected.', data: updated });
+    }
+
+    // Approve → anonymize & disable the user inside a transaction. Deals,
+    // commissions and meetings are intentionally preserved for audit/finance.
+    const user = await prisma.user.findUnique({ where: { id: request.userId } });
+    if (!user) return res.status(404).json({ ok: false, message: 'User not found' });
+    const stamp = Date.now();
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          fullName: 'Deleted user',
+          email: null,
+          phone: `deleted-${user.id}-${stamp}`,
+          whatsappOptIn: false,
+          role: user.role.startsWith('SUSPENDED_') ? user.role : `SUSPENDED_${user.role}`,
+        },
+      }),
+      prisma.session.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
+      prisma.accountDeletionRequest.update({
+        where: { id },
+        data: { status: 'approved', reviewedAt: new Date(), reviewedBy: req.user!.id },
+      }),
+    ]);
+    res.json({ ok: true, message: 'Account anonymized and disabled.', data: { userId: user.id } });
+  },
 };
