@@ -1,0 +1,20 @@
+service: dealio-backend
+
+provider:
+  name: aws
+  runtime: nodejs20.x  # Use the latest LTS Node.js runtime supported by Lambda
+  region: us-east-1    # Replace with your target AWS deployment region
+  environment:
+    DB_HOST:
+    DB_USER: postgres
+    DB_PASSWORD:
+    DB_NAME: postgres
+    DB_PORT: 5432
+
+functions:
+  api:
+    handler: index.handler  # Points to index.js file and the exported 'handler' function
+    events:
+      - httpApi:
+          path: /{proxy+}   # Routes all incoming paths to your Node.js routing engine
+          method: any

@@ -1,0 +1,42 @@
+ The Meta WhatsApp webhook is built, wired in, and verified end-to-end. Here are the two things you asked for:
+
+  🔑 Verify token
+
+  d22d8f58e4d7dcf8e6f3e004cafc2c9544f5cb7fb8f5476b040c51828b24294b
+  Already saved as WHATSAPP_VERIFY_TOKEN in your .env. Paste this exact value into Meta's "Verify token" field.
+
+  🔗 Callback URL
+
+  https://<YOUR_BACKEND_HTTPS_DOMAIN>/api/whatsapp/webhook
+  The path (/api/whatsapp/webhook) is live in code. But I have to be straight with you about the host:
+
+  ⚠️ Meta requires HTTPS with a valid CA certificate. Your backend is currently HTTP-only on a raw IP (http://100.28.134.6:8090) — Meta will reject that. You need a public HTTPS origin first.
+  Options:
+  ┌───────────────────────────────────────────────────┬──────────────────────────────────────────────────┬─────────────────────────────┐
+  │                     Approach                      │               Callback URL becomes               │          Best for           │
+  ├───────────────────────────────────────────────────┼──────────────────────────────────────────────────┼─────────────────────────────┤
+  │ ngrok / Cloudflare Tunnel (ngrok http 8090)       │ https://<id>.ngrok-free.app/api/whatsapp/webhook │ Testing the handshake today │
+  ├───────────────────────────────────────────────────┼──────────────────────────────────────────────────┼─────────────────────────────┤
+  │ AWS ALB + ACM cert (you're already on AWS)        │ https://<alb-or-domain>/api/whatsapp/webhook     │ Production (recommended)    │
+  ├───────────────────────────────────────────────────┼──────────────────────────────────────────────────┼─────────────────────────────┤
+  │ nginx + Let's Encrypt on the EC2 (needs a domain) │ https://api.yourdomain.com/api/whatsapp/webhook  │ Production without ALB      │
+  └───────────────────────────────────────────────────┴──────────────────────────────────────────────────┴─────────────────────────────┘
+
+
+  - src/controllers/whatsappController.ts — GET handshake (echoes hub.challenge only when the verify token matches) + POST receiver that validates Meta's X-Hub-Signature-256 HMAC, acks fast with 200,
+  then parses inbound messages/statuses.
+  - src/routes/whatsappRoutes.ts — mounts both at /webhook with a raw body parser on POST.
+  - src/app.ts — mounted at /api/whatsapp before express.json() so the signature HMAC sees the exact raw bytes.
+  - .env / .env.example — added WHATSAPP_VERIFY_TOKEN (set) and WHATSAPP_APP_SECRET (empty — fill from Meta).
+
+  Verified: booted the real app — correct token → 200+challenge, wrong token → 403, valid signature → 200, bad/missing signature → 401. tsc clean.
+
+  To finish the connection
+1. Deploy this code to the EC2 backend (Meta hits the public URL, not localhost).
+  2. Stand up an HTTPS origin (pick a row above).
+  3. Set WHATSAPP_APP_SECRET in .env from Meta App → Settings → Basic → App Secret (without it, inbound signatures aren't verified — fine for a quick test, not for prod).
+  4. In Meta: App → WhatsApp → Configuration → Webhook → Edit → paste Callback URL + Verify token → Verify and Save → then Subscribe to the messages field.
+
+  Two notes: the webhook is only needed to receive messages/delivery statuses — your outbound OTP sending already works without it. And your .env DATABASE_URL is still commented out from before, so
+  the full server won't boot until you uncomment the dealio_dev one.
+Want me to set up the AWS ALB + ACM HTTPS path for the backend so you get a real callback URL, or wire up an ngrok URL so you can verify the webhook in Meta right now?

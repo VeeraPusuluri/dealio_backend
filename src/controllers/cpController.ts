@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto';
 import prisma from '../utils/prisma';
 import { channelManager } from '../services/channelManager';
 import { notifyDealParties } from '../services/dealNotify';
+import { threadKey } from '../utils/thread';
 
 // In-memory OTP store for phone verification (dev-only)
 const phoneOtpStore: Record<string, { otp: string; expiresAt: number }> = {};
@@ -305,7 +306,7 @@ export const cpController = {
     const deals = await prisma.deal.findMany({
       where: { cpId: cp.id },
       include: {
-        project:  { select: { name: true, commissionValue: true, builderId: true } },
+        project:  { select: { name: true, commissionValue: true, builderId: true, builder: { select: { companyName: true, user: { select: { fullName: true } } } } } },
         customer: { select: { fullName: true, phone: true, email: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -316,6 +317,7 @@ export const cpController = {
       projectId:           d.projectId,
       projectName:         d.project?.name ?? 'Unknown',
       builderId:           d.project?.builderId ?? null,
+      builderName:         (d.project as any)?.builder?.companyName ?? (d.project as any)?.builder?.user?.fullName ?? 'Builder',
       customerName:        d.customer?.fullName ?? 'Unknown',
       customerPhone:       d.customer?.phone ?? '',
       customerEmail:       d.customer?.email ?? null,
@@ -692,6 +694,9 @@ export const cpController = {
   sendCPDealMessage: async (req: Request, res: Response) => {
     const { cpUserId, dealId } = req.params;
     const { message } = req.body;
+    // recipientRole picks the private thread: cp↔customer or cp↔builder. Defaults to
+    // builder to preserve the legacy behaviour of older callers that omit it.
+    const recipientRole: 'customer' | 'builder' = req.body.recipientRole === 'customer' ? 'customer' : 'builder';
     if (!message?.trim()) return res.status(400).json({ ok: false, message: 'message is required' });
     const cp = await prisma.channelPartner.findUnique({
       where: { userId: Number(cpUserId) },
@@ -704,6 +709,7 @@ export const cpController = {
         senderId:   Number(cpUserId),
         senderName: (cp.user as any)?.fullName ?? 'CP',
         senderRole: 'cp',
+        threadKey:  threadKey('cp', recipientRole),
         message,
       },
     });
@@ -711,8 +717,8 @@ export const cpController = {
       type: 'deal_message',
       title: 'New message from CP',
       message: message.substring(0, 80),
-      to: ['builder'],
-      link: { builder: '/builder/deals' },
+      to: [recipientRole],
+      link: { builder: '/builder/deals', customer: '/customer/conversations' },
       whatsappTemplate: 'deal_new_message',
     }).catch(() => {});
     res.json({ ok: true, data: msg });

@@ -1,16 +1,40 @@
-# Deployment setup — Backend (EC2 via ECR)
+# Deployment — Backend (EC2 · dev/prod from one repo)
 
-CI builds the Docker image, pushes it to **Amazon ECR**, then SSHes into the
-**EC2** instance and runs `docker compose up -d`. Auth to AWS uses **GitHub
-OIDC** (no long-lived keys). Triggers: push to `main`, or manual run.
+Same codebase, two environments selected by **branch**:
+
+```
+push to `dev`   → GitHub Environment `dev`   → dev  EC2 box  → dev  RDS   (image tag dev-*)
+push to `main`  → GitHub Environment `prod`  → prod EC2 box  → prod RDS  (image tag prod-*)
+```
+
+CI builds the Docker image, pushes it to **one ECR repo** (`dealio-backend`) with
+`<env>-<sha>` / `<env>-latest` tags, then SSHes into that environment's EC2 box,
+renders `.env` from **SSM Parameter Store**, and runs `docker compose up -d`.
+Auth to AWS uses **GitHub OIDC** (no long-lived keys).
 
 Account `687159379528`, region `us-east-1`.
 
 ---
 
-## 1. One-time AWS setup (shared by both repos)
+## Where secrets live (and where they do NOT)
 
-### a. Create the GitHub OIDC provider (skip if it already exists)
+| Kind | Examples | Store | Read by |
+|---|---|---|---|
+| **App runtime secrets** | `DATABASE_URL`, `JWT_SECRET`, `ANTHROPIC_API_KEY`, `SMTP_*`, `WHATSAPP_*` | **AWS SSM Parameter Store** `SecureString`, per env: `/dealio/dev/backend/*`, `/dealio/prod/backend/*` | the **EC2 box at runtime** via its instance IAM role |
+| **CI/deploy secrets** | `AWS_DEPLOY_ROLE_ARN`, `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY` | **GitHub Environments** (`dev`, `prod`) | GitHub Actions only |
+| **Templates (no secrets)** | required keys, dummy values | **git** (`.env.example`) | humans |
+
+Rules of thumb:
+- **Never** commit real secrets (`.gitignore` blocks `.env` and `.env.*`, allows `.env.example`).
+- App secrets go in **AWS**, fetched at runtime by the workload's IAM identity — they never pass through CI logs, and you rotate in one place.
+- GitHub Secrets hold only "how to authenticate to AWS and reach the box."
+- SSM `SecureString` (standard tier) is free. Use **Secrets Manager** instead only if you want built-in auto-rotation (~$0.40/secret/mo).
+
+---
+
+## 1. One-time AWS setup
+
+### a. GitHub OIDC provider (skip if it already exists)
 
 ```bash
 aws iam create-open-id-connect-provider \
@@ -19,9 +43,9 @@ aws iam create-open-id-connect-provider \
   --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
 ```
 
-### b. Create the deploy role used by **both** repos
+### b. Deploy role assumed by CI via OIDC (`AWS_DEPLOY_ROLE_ARN`)
 
-`trust-policy.json`:
+`trust-policy.json` — allow both repos / all branches:
 
 ```json
 {
@@ -32,18 +56,16 @@ aws iam create-open-id-connect-provider \
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
       "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-      "StringLike": {
-        "token.actions.githubusercontent.com:sub": [
-          "repo:VeeraPusuluri/dealio_backend:*",
-          "repo:VeeraPusuluri/dealio:*"
-        ]
-      }
+      "StringLike": { "token.actions.githubusercontent.com:sub": [
+        "repo:VeeraPusuluri/dealio_backend:*",
+        "repo:VeeraPusuluri/dealio:*"
+      ] }
     }
   }]
 }
 ```
 
-`deploy-policy.json` (ECR push for backend + Amplify trigger for frontend):
+`deploy-policy.json` — CI only needs to push images to ECR:
 
 ```json
 {
@@ -54,8 +76,7 @@ aws iam create-open-id-connect-provider \
         "ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage",
         "ecr:PutImage", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload",
         "ecr:DescribeRepositories", "ecr:CreateRepository"
-      ], "Resource": "*" },
-    { "Sid": "AmplifyDeploy", "Effect": "Allow", "Action": ["amplify:StartJob", "amplify:GetJob"], "Resource": "*" }
+    ], "Resource": "*" }
   ]
 }
 ```
@@ -63,68 +84,88 @@ aws iam create-open-id-connect-provider \
 ```bash
 aws iam create-role --role-name dealio-github-deploy \
   --assume-role-policy-document file://trust-policy.json
-
 aws iam put-role-policy --role-name dealio-github-deploy \
   --policy-name dealio-deploy --policy-document file://deploy-policy.json
-
-# Note the ARN it prints -> this is AWS_DEPLOY_ROLE_ARN for BOTH repos:
-#   arn:aws:iam::687159379528:role/dealio-github-deploy
+# ARN -> AWS_DEPLOY_ROLE_ARN: arn:aws:iam::687159379528:role/dealio-github-deploy
 ```
 
----
+### c. Let each EC2 box read its env's SSM params
 
-## 2. EC2 instance prep (one-time)
+The instance role (current prod box: **`dealio-ec2-ecr-role`**) needs SSM read +
+KMS decrypt. Attach this inline policy to each environment's instance role
+(scope the `Resource` path to that env):
 
-1. **Install Docker + compose plugin + AWS CLI**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "SsmRead", "Effect": "Allow",
+      "Action": ["ssm:GetParametersByPath", "ssm:GetParameters", "ssm:GetParameter"],
+      "Resource": "arn:aws:ssm:us-east-1:687159379528:parameter/dealio/prod/backend/*" },
+    { "Sid": "KmsDecrypt", "Effect": "Allow", "Action": "kms:Decrypt",
+      "Resource": "*" }
+  ]
+}
+```
 
-   Amazon Linux 2023:
-   ```bash
-   sudo dnf install -y docker
-   sudo systemctl enable --now docker
-   sudo usermod -aG docker $USER        # log out/in after this
-   sudo dnf install -y docker-compose-plugin   # or the compose v2 binary
-   # aws cli is preinstalled on AL2023
-   ```
-   Ubuntu: install `docker.io`, the `docker-compose-plugin`, and `awscli`.
+```bash
+aws iam put-role-policy --role-name dealio-ec2-ecr-role \
+  --policy-name dealio-ssm-prod --policy-document file://ssm-read-prod.json
+```
 
-2. **Let the instance pull from ECR** — attach an IAM **instance role** with the
-   managed policy `AmazonEC2ContainerRegistryReadOnly` to the EC2 instance.
+(The box also keeps `AmazonEC2ContainerRegistryReadOnly` for ECR pulls.)
 
-3. **Create the app dir + runtime env file**
-   ```bash
-   mkdir -p ~/dealio-backend/uploads
-   cd ~/dealio-backend
-   # create .env with the production values the app reads at runtime:
-   #   DATABASE_URL, JWT_SECRET, GOOGLE_CLIENT_ID, SMTP_*, WHATSAPP_*,
-   #   ANTHROPIC_API_KEY, TWILIO_*/MSG91_*, etc.
-   vi .env
-   ```
-   The workflow copies `docker-compose.yml` here on each deploy.
+### d. Put the runtime secrets into SSM (source of truth)
 
-4. **Security group** — allow inbound `8090` (and whatever your reverse proxy /
-   load balancer needs). Outbound 443 must be open for ECR pulls.
+From a machine with admin creds, load each env's values (helper script provided):
 
----
+```bash
+./scripts/put-ssm-secrets.sh prod .env.prod   # uploads to /dealio/prod/backend/*
+./scripts/put-ssm-secrets.sh dev  .env.dev    # uploads to /dealio/dev/backend/*
+```
 
-## 3. GitHub secrets — repo `VeeraPusuluri/dealio_backend`
-
-Settings → Secrets and variables → Actions → **New repository secret**:
-
-| Secret | Value |
-|---|---|
-| `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::687159379528:role/dealio-github-deploy` |
-| `EC2_HOST` | EC2 public IP or DNS |
-| `EC2_USER` | `ec2-user` (Amazon Linux) or `ubuntu` |
-| `EC2_SSH_KEY` | the **private** key (full PEM contents) for the instance key pair |
-| `EC2_SSH_PORT` | *(optional)* defaults to `22` |
+`.env.prod` / `.env.dev` are gitignored working files — keep them off git; SSM is
+the real store. Each env should have its **own** `DATABASE_URL` (its RDS),
+`ALLOWED_ORIGINS`/`FRONTEND_URL`, and a distinct `JWT_SECRET`.
 
 ---
 
-## 4. Notes / knobs
+## 2. GitHub Environments — repo `VeeraPusuluri/dealio_backend`
 
-- ECR repo name defaults to `dealio-backend` (`ECR_REPOSITORY` in the workflow);
-  it's auto-created on first run. Change it there if you prefer the existing repo.
-- DB schema is synced with `prisma db push --skip-generate` on each deploy
-  (project has no `prisma/migrations/`). Remove that step in `deploy.yml` if you
-  want to manage schema changes manually.
-- First deploy: push to `main`, or run **Actions → Deploy Backend (EC2) → Run workflow**.
+Settings → **Environments** → create **`dev`** and **`prod`**. In each, add these
+**environment secrets** (values differ per env):
+
+| Secret | dev | prod |
+|---|---|---|
+| `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::687159379528:role/dealio-github-deploy` | same |
+| `EC2_HOST` | dev box IP/DNS | prod box IP/DNS (e.g. `100.28.134.6`) |
+| `EC2_USER` | `ubuntu` | `ubuntu` |
+| `EC2_SSH_KEY` | dev instance PEM | prod instance PEM |
+| `EC2_SSH_PORT` | *(optional, 22)* | *(optional, 22)* |
+
+Optionally add a **required reviewer** on `prod` so production deploys need an
+approval click.
+
+---
+
+## 3. Deploy
+
+- **Dev:** `git push origin dev` → builds `dev-*`, deploys to the dev box.
+- **Prod:** merge/push to `main` → builds `prod-*`, deploys to the prod box.
+- **Manual:** Actions → *Deploy Backend (EC2 · dev/prod)* → Run workflow (pick branch).
+
+The workflow renders `.env` from SSM on the box each deploy, so secret changes
+take effect by re-running SSM `put-parameter` then redeploying (no code change).
+
+---
+
+## Notes / knobs
+
+- **DB schema** is synced with `prisma db push --skip-generate` on every deploy
+  (no `prisma/migrations/`). Remove that step if you want manual schema control.
+- **One box, both envs?** This design assumes a **separate EC2 per env**. To run
+  both on one box, give each a distinct `COMPOSE_PROJECT_NAME` and host port.
+- **HTTPS:** the app listens on `:8090` (HTTP). An HTTPS frontend (Amplify) needs
+  TLS in front of it (reverse proxy / ALB) before browser calls succeed.
+- **Single ECR repo** holds both envs via `dev-*` / `prod-*` tags; split into two
+  repos later if you want separate lifecycle policies.
