@@ -65,7 +65,7 @@ function isValidCountryCode(cc: unknown): boolean {
   return cc === undefined || cc === null || (typeof cc === 'string' && /^\+?\d{1,4}$/.test(cc.trim()));
 }
 
-async function handleSendOtp(req: Request, res: Response) {
+async function handleSendOtp(req: Request, res: Response, opts?: { requireExistingAccount?: boolean }) {
   const { phone, countryCode } = req.body;
   if (!isValidPhone(phone)) {
     res.status(400).json({ ok: false, message: 'A valid phone number is required' });
@@ -74,6 +74,16 @@ async function handleSendOtp(req: Request, res: Response) {
   if (!isValidCountryCode(countryCode)) {
     res.status(400).json({ ok: false, message: 'Invalid country code' });
     return;
+  }
+  // For login, verify the number is registered *before* sending a code, so the
+  // user learns there's no account when they enter the number — not after going
+  // through the whole OTP round-trip. (Matches loginVerifyOtp's existing check.)
+  if (opts?.requireExistingAccount) {
+    const existing = await prisma.user.findUnique({ where: { phone: phone.trim() }, select: { id: true } });
+    if (!existing) {
+      res.status(404).json({ ok: false, message: 'No account found for this number. Please sign up first.' });
+      return;
+    }
   }
   const result = await authService.sendOtp(phone.trim(), {
     countryCode: typeof countryCode === 'string' ? countryCode.trim() : undefined,
@@ -89,7 +99,7 @@ async function handleSendOtp(req: Request, res: Response) {
 const KNOWN_ROLES = new Set(['BUILDER', 'CP', 'CUSTOMER', 'BANK', 'VENDOR', 'ADMIN', 'NRI', 'LANDOWNER']);
 
 export const authController = {
-  loginSendOtp: handleSendOtp,
+  loginSendOtp: (req: Request, res: Response) => handleSendOtp(req, res, { requireExistingAccount: true }),
 
   loginVerifyOtp: async (req: Request, res: Response) => {
     const { phone, otp } = req.body;
@@ -112,7 +122,7 @@ export const authController = {
     }
   },
 
-  signupSendOtp: handleSendOtp,
+  signupSendOtp: (req: Request, res: Response) => handleSendOtp(req, res),
 
   signupVerifyOtp: async (req: Request, res: Response) => {
     const { phone, otp, fullName, role, referralCode } = req.body;
