@@ -6,7 +6,7 @@ import { threadKey } from '../utils/thread';
 import PDFDocument from 'pdfkit';
 import { generateICS } from '../services/calendarService';
 import { sendCalendarInvite } from '../services/emailService';
-import { assignCustomerToCp } from '../services/cpAssignment';
+import { assignCustomerToCp, assertCpMayDeal, CpAssignmentError } from '../services/cpAssignment';
 
 const DEAL_STATUS_NORM: Record<string, string> = {
   'new lead': 'New Lead', 'profile created': 'Profile Created',
@@ -24,6 +24,12 @@ function normalizeDealStatus(s: string): string {
 // under both /api/builder (builder) and /api/portal (customer), so we mask only
 // when the *requester* is a builder; customers/CPs still get the real number.
 function isBuilderRequest(req: Request): boolean {
+  // These controllers serve both the builder portal (mounted at /api/builder) and
+  // the customer portal (/api/portal). Many of these GET routes have no auth
+  // middleware, so req.user may be undefined — rely on the mount path. Anything
+  // under /api/builder is the builder acting; customers use /api/portal and CPs
+  // use /api/cp, so they keep the real number.
+  if (req.baseUrl.endsWith('/builder')) return true;
   return req.user?.role === 'BUILDER';
 }
 // Returns the customer phone for the requester, or '' for a builder.
@@ -762,6 +768,21 @@ export const builderController = {
         select: { cpId: true },
       });
       cpId = deal?.cpId ?? null;
+    }
+
+    // When a CP explicitly creates this meeting request, enforce the 90-day lock:
+    // a different CP cannot open a meeting for a customer+project already held by
+    // another CP (same builder). A different project is allowed; a direct customer
+    // booking (no cpUserId) is never blocked.
+    if (meetingData.cpUserId && cpId && meetingData.projectId) {
+      try {
+        await assertCpMayDeal(cpId, customer.id, Number(meetingData.projectId));
+      } catch (err) {
+        if (err instanceof CpAssignmentError) {
+          return res.status(err.status).json({ ok: false, message: err.message });
+        }
+        throw err;
+      }
     }
 
     const newMeeting = await prisma.meeting.create({
