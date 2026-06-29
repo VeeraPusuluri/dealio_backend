@@ -1,23 +1,51 @@
 import Redis from 'ioredis';
 
-// Shared Redis client, configured via REDIS_URL
-// (e.g. redis://localhost:6379, or rediss://host:6379 for TLS).
-//
-// When REDIS_URL is unset, this is null and callers fall back to in-memory
-// storage. In-memory is fine for a single local dev process, but it does NOT
-// survive restarts and is NOT shared across instances — set REDIS_URL in any
-// environment that runs more than one backend instance (e.g. production).
+// Shared Redis client. When REDIS_URL is unset, or when the initial connection
+// fails, this is null and callers fall back to in-memory storage automatically.
+
 let redis: Redis | null = null;
 
 if (process.env.REDIS_URL) {
-  redis = new Redis(process.env.REDIS_URL, {
-    // Fail fast instead of queueing commands forever when Redis is unreachable.
-    maxRetriesPerRequest: 2,
-    retryStrategy: (times) => Math.min(times * 200, 2000),
+  let warnedDown = false;
+
+  const client = new Redis(process.env.REDIS_URL, {
+    maxRetriesPerRequest: 0,
+    enableOfflineQueue: false,
+    // Retry up to 3 times (covers transient TCP hiccups), then stop so a
+    // missing local Redis doesn't spam the console every few seconds.
+    retryStrategy: (times) => {
+      if (times >= 3) {
+        if (!warnedDown) {
+          warnedDown = true;
+          console.warn(
+            '[Redis] unreachable after 3 attempts — falling back to in-memory ' +
+            'OTP store. Start Redis or unset REDIS_URL to use persistent storage.'
+          );
+        }
+        return null; // stop retrying
+      }
+      return Math.min(times * 300, 1000);
+    },
   });
 
-  redis.on('connect', () => console.log('[Redis] connected'));
-  redis.on('error', (err) => console.error('[Redis] error:', err.message));
+  client.on('connect', () => {
+    warnedDown = false;
+    console.log('[Redis] connected');
+  });
+
+  // Only log the first error per outage; retryStrategy handles the fallback message.
+  client.on('error', (err: Error) => {
+    if (!warnedDown) console.error('[Redis] error:', err.message);
+  });
+
+  redis = client;
+}
+
+// True once Redis has successfully connected (status === 'ready').
+// Checked dynamically by otpStore so it falls back to in-memory if Redis
+// never connects or goes away after startup.
+export function isRedisReady(): boolean {
+  return redis?.status === 'ready';
 }
 
 export const redisEnabled = redis !== null;

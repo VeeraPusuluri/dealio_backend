@@ -4,6 +4,7 @@ import prisma from '../utils/prisma';
 import { sendOtpSms, smsProviderConfigured } from './smsService';
 import { sendWhatsAppOtp, WHATSAPP_ENABLED } from './whatsapp';
 import { otpStore } from './otpStore';
+import { issueSession, DeviceInfo } from './sessionService';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dealio-secret-key-12345';
 
@@ -125,7 +126,9 @@ export const authService = {
   verifyOtp: async (
     phone: string,
     otp: string,
-    userData?: { fullName?: string; role?: string }
+    userData?: { fullName?: string; role?: string },
+    device?: DeviceInfo,
+    isLogin?: boolean
   ): Promise<VerifyOtpResult> => {
     // Dev/test convenience only: the legacy constant code keeps the demo-skip
     // flow and local testing working. Never accepted in production.
@@ -158,6 +161,9 @@ export const authService = {
     }
 
     if (!user) {
+      if (isLogin) {
+        return { success: false, message: 'No account found for this number. Please sign up first.' };
+      }
       user = await prisma.user.create({
         data: {
           phone,
@@ -184,10 +190,9 @@ export const authService = {
       });
     }
 
-    const token = jwt.sign(
-      { id: user.id, phone: user.phone, role: user.role, name: user.fullName },
-      JWT_SECRET,
-      { expiresIn: '7d' }
+    const { token, expiresIn } = await issueSession(
+      { id: user.id, phone: user.phone, role: user.role, fullName: user.fullName },
+      device
     );
 
     return {
@@ -195,7 +200,7 @@ export const authService = {
       data: {
         accessToken: token,
         refreshToken: token,
-        expiresIn: 7 * 24 * 60 * 60,
+        expiresIn,
         user: {
           id: user.id,
           fullName: user.fullName,

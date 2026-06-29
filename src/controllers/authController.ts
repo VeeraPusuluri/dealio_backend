@@ -3,6 +3,7 @@ import { OAuth2Client } from 'google-auth-library';
 import { authService } from '../services/authService';
 import prisma from '../utils/prisma';
 import { channelManager } from '../services/channelManager';
+import { issueSession } from '../services/sessionService';
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dealio-secret-key-12345';
@@ -100,7 +101,10 @@ export const authController = {
       res.status(400).json({ ok: false, message: 'A valid 6-digit OTP is required' });
       return;
     }
-    const result = await authService.verifyOtp(phone.trim(), otp.trim());
+    const result = await authService.verifyOtp(phone.trim(), otp.trim(), undefined, {
+      userAgent: req.headers['user-agent'],
+      ip: req.ip,
+    }, true);
     if (result.success) {
       res.json({ ok: true, data: result.data });
     } else {
@@ -129,7 +133,10 @@ export const authController = {
       return;
     }
     const isNewUser = !(await prisma.user.findUnique({ where: { phone: phone.trim() }, select: { id: true } }));
-    const result = await authService.verifyOtp(phone.trim(), otp.trim(), { fullName, role });
+    const result = await authService.verifyOtp(phone.trim(), otp.trim(), { fullName, role }, {
+      userAgent: req.headers['user-agent'],
+      ip: req.ip,
+    });
     if (result.success) {
       if (isNewUser && referralCode) {
         processReferral(result.data!.user.id, role, referralCode).catch(err =>
@@ -206,10 +213,9 @@ export const authController = {
         });
       }
 
-      const token = jwt.sign(
-        { id: user.id, phone: user.phone, role: user.role, name: user.fullName },
-        JWT_SECRET,
-        { expiresIn: '7d' }
+      const { token, expiresIn } = await issueSession(
+        { id: user.id, phone: user.phone, role: user.role, fullName: user.fullName },
+        { userAgent: req.headers['user-agent'], ip: req.ip }
       );
 
       console.log('[googleAuth] success for user id:', user.id);
@@ -218,7 +224,7 @@ export const authController = {
         data: {
           accessToken: token,
           refreshToken: token,
-          expiresIn: 7 * 24 * 60 * 60,
+          expiresIn,
           user: {
             id:       user.id,
             fullName: user.fullName ?? googleName,

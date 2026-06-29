@@ -1,4 +1,4 @@
-import redis, { redisEnabled } from '../utils/redis';
+import redis, { redisEnabled, isRedisReady } from '../utils/redis';
 
 // Shared storage for one-time passcodes and send rate-limiting.
 //
@@ -141,6 +141,14 @@ const memStore: OtpStore = {
   },
 };
 
-export const otpStore: OtpStore = redisEnabled ? redisStore : memStore;
+// Proxy that selects the backend dynamically: uses Redis when it's actually
+// connected and ready, falls back to in-memory otherwise. This means a missing
+// local Redis never breaks OTP flow — it just uses the in-memory store.
+export const otpStore: OtpStore = new Proxy({} as OtpStore, {
+  get(_target, prop: keyof OtpStore) {
+    const store = (redisEnabled && isRedisReady()) ? redisStore : memStore;
+    return store[prop];
+  },
+});
 
-console.log(`[OtpStore] using ${redisEnabled ? 'Redis' : 'in-memory'} storage`);
+console.log(`[OtpStore] backend: ${redisEnabled ? 'Redis (when connected) / in-memory fallback' : 'in-memory'}`);

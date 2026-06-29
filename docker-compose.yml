@@ -9,7 +9,8 @@ services:
     env_file:
       - .env
     environment:
-      NODE_ENV: production
+      # NODE_ENV is per-environment, so it comes from .env (SSM): `development`
+      # for dev (echoes OTP + enables the 123456 test code), `production` for prod.
       PORT: "8090"
     ports:
       - "8090:8090"

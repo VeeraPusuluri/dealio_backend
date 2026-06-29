@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../utils/prisma';
 import { channelManager } from '../services/channelManager';
 import { notifyDealParties } from '../services/dealNotify';
+import { threadKey } from '../utils/thread';
 import PDFDocument from 'pdfkit';
 import { generateICS } from '../services/calendarService';
 import { sendCalendarInvite } from '../services/emailService';
@@ -1150,6 +1151,8 @@ export const builderController = {
       where: { customerId: customer.id },
       include: {
         project:       { select: { name: true } },
+        builder:       { select: { companyName: true, user: { select: { fullName: true } } } },
+        cp:            { select: { user: { select: { fullName: true } } } },
         loanCase:      { select: { id: true, loanAmount: true, status: true, tenureMonths: true, interestRate: true } },
         dealDocuments: { where: { sharedWithCustomer: true }, orderBy: { createdAt: 'asc' } },
         messages:      { orderBy: { createdAt: 'asc' } },
@@ -1162,6 +1165,8 @@ export const builderController = {
       dealId:            d.id,
       projectId:         d.projectId,
       projectName:       (d.project as any)?.name ?? 'Unknown Project',
+      builderName:       (d.builder as any)?.companyName ?? (d.builder as any)?.user?.fullName ?? 'Builder',
+      cpName:            (d.cp as any)?.user?.fullName ?? null,
       dealStatus:        d.status,
       dealValue:         d.dealValue,
       customerConfirmed: d.customerConfirmed,
@@ -1178,7 +1183,7 @@ export const builderController = {
       })),
       messages: (d.messages as any[]).map(m => ({
         id: m.id, senderName: m.senderName, senderRole: m.senderRole,
-        message: m.message, createdAt: m.createdAt.toISOString(),
+        threadKey: m.threadKey, message: m.message, createdAt: m.createdAt.toISOString(),
       })),
     }));
     res.json({ ok: true, data: mapped });
@@ -1965,6 +1970,9 @@ export const builderController = {
   sendDealMessage: async (req: Request, res: Response) => {
     const { builderId, dealId } = req.params;
     const { message } = req.body;
+    // recipientRole picks the private thread: builder↔customer or builder↔cp. Defaults
+    // to cp to preserve the legacy behaviour of older callers that omit it.
+    const recipientRole: 'customer' | 'cp' = req.body.recipientRole === 'customer' ? 'customer' : 'cp';
     if (!message?.trim()) return res.status(400).json({ ok: false, message: 'message is required' });
     const builder = await prisma.builder.findUnique({
       where: { id: Number(builderId) },
@@ -1977,6 +1985,7 @@ export const builderController = {
         senderId:   builder.userId,
         senderName: (builder.user as any)?.fullName ?? 'Builder',
         senderRole: 'builder',
+        threadKey:  threadKey('builder', recipientRole),
         message,
       },
     });
@@ -1984,8 +1993,8 @@ export const builderController = {
       type: 'deal_message',
       title: 'New message from Builder',
       message: message.substring(0, 80),
-      to: ['cp'],
-      link: { cp: '/cp/leads' },
+      to: [recipientRole],
+      link: { cp: '/cp/leads', customer: '/customer/conversations' },
       whatsappTemplate: 'deal_new_message',
     }).catch(() => {});
     res.json({ ok: true, data: msg });
@@ -2274,20 +2283,22 @@ export const builderController = {
     });
     if (!deal) return res.status(404).json({ ok: false, message: 'Deal not found or not authorized' });
 
+    const custMsgProject = (deal.project as any)?.name ?? 'your project';
+    if (recipientRole === 'cp' && !deal.cp) {
+      return res.status(400).json({ ok: false, message: 'No channel partner is assigned to this deal yet' });
+    }
+
     const msg = await prisma.dealMessage.create({
       data: {
         dealId:     deal.id,
         senderId:   customer.id,
         senderName: customer.fullName ?? 'Customer',
         senderRole: 'customer',
+        threadKey:  threadKey('customer', recipientRole),
         message,
       },
     });
 
-    const custMsgProject = (deal.project as any)?.name ?? 'your project';
-    if (recipientRole === 'cp' && !deal.cp) {
-      return res.status(400).json({ ok: false, message: 'No channel partner is assigned to this deal yet' });
-    }
     await notifyDealParties(deal.id, {
       type: 'deal_message',
       title: 'New message from customer',
