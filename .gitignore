@@ -23,3 +23,6 @@ infra/terraform/.terraform/
 *.tfstate
 *.tfstate.*
 *.tfplan
+
+# Firebase Admin service account (secret — never commit)
+firebase-service-account.json

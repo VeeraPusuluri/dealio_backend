@@ -275,4 +275,22 @@ export const authController = {
     });
     res.json({ ok: true, data: latest });
   },
+
+  // Register (or move) an FCM device token to the current user for push delivery.
+  registerDeviceToken: async (req: Request, res: Response) => {
+    const userId = req.user!.id;
+    const { token, platform } = req.body ?? {};
+    if (typeof token !== 'string' || token.trim().length < 10) {
+      res.status(400).json({ ok: false, message: 'A valid FCM token is required' });
+      return;
+    }
+    const plat = ['ios', 'android', 'web'].includes(String(platform)) ? String(platform) : 'unknown';
+    // Upsert by unique token so re-registering simply re-points it to this user.
+    const saved = await prisma.deviceToken.upsert({
+      where: { token: token.trim() },
+      update: { userId, platform: plat },
+      create: { userId, token: token.trim(), platform: plat },
+    });
+    res.json({ ok: true, message: 'Device token registered', data: { id: saved.id } });
+  },
 };

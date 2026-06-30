@@ -28,6 +28,21 @@ model User {
   sessions           Session[]
   cpAssignments      CustomerCpAssignment[]
   deletionRequests   AccountDeletionRequest[]
+  deviceTokens       DeviceToken[]
+}
+
+// A registered FCM device token for push notifications. One row per device;
+// the same token is unique across users (re-registering moves it to the new user).
+model DeviceToken {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  platform  String   @default("unknown") // ios | android | web
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
 
 // A logged-in device/session. The JWT carries this row's `jti`; the auth

@@ -21,4 +21,7 @@ router.post('/logout', requireAuth, sessionController.logout);
 router.post('/account/deletion-request', requireAuth, authController.requestAccountDeletion);
 router.get('/account/deletion-request', requireAuth, authController.getMyDeletionRequest);
 
+// FCM device-token registration for push notifications
+router.post('/device-token', requireAuth, authController.registerDeviceToken);
+
 export default router;
