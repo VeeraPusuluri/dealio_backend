@@ -2220,7 +2220,7 @@ export const builderController = {
       const deal = await prisma.deal.findUnique({
         where: { id: Number(dealId), builderId: Number(builderId) },
         include: {
-          customer: { select: { userId: true, fullName: true } },
+          customer: { select: { id: true, fullName: true } },
           cp:       { select: { userId: true } },
           project:  { select: { name: true } },
           dealDocuments: { select: { docType: true, uploadedByRole: true } },

@@ -12,7 +12,6 @@
 import prisma from '../utils/prisma';
 import { channelManager, ChannelEvent } from './channelManager';
 import { sendWhatsApp } from './whatsapp';
-import { sendPushToUser } from './pushService';
 
 export type DealRole = 'builder' | 'cp' | 'customer';
 
@@ -128,14 +127,8 @@ export async function notifyDealParties(dealId: number, ev: DealNotifyInput): Pr
         await sendWhatsApp(party.phone, ev.whatsappTemplate, vars);
       }
 
-      // 4. FCM push to the party's registered devices (no-op when push disabled
-      // or the user has no tokens). Best-effort — never breaks the event.
-      await sendPushToUser(party.userId, {
-        title: ev.title,
-        body: ev.message,
-        link,
-        data: { type: ev.type, dealId: String(dealId) },
-      }).catch(() => null);
+      // 4. FCM push is fired automatically by the prisma `notification.create`
+      // extension (see utils/prisma.ts) when step 1 persists the row above.
     }),
   );
 }
