@@ -4,6 +4,7 @@ import { notifyDealParties } from '../services/dealNotify';
 
 export const adminController = {
 
+  //
   // ── Platform stats ─────────────────────────────────────────────────────────
   getStats: async (_req: Request, res: Response) => {
     const [
