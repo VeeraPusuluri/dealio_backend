@@ -183,6 +183,20 @@ export const adminController = {
     res.json({ ok: true, data: cps });
   },
 
+  // ── CPs list scoped for the contact-assignment picker (id, name, city, tier) ─
+  getCPsForAssignment: async (_req: Request, res: Response) => {
+    const cps = await prisma.channelPartner.findMany({
+      select: {
+        id: true,
+        city: true,
+        tier: true,
+        user: { select: { id: true, fullName: true, phone: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ ok: true, data: cps });
+  },
+
   // Verify or reject a single CP document
   verifyDocument: async (req: Request, res: Response) => {
     const { cpId } = req.params;
@@ -257,16 +271,56 @@ export const adminController = {
         } : {}),
       },
       include: {
-        customer: { select: { id: true, fullName: true, phone: true, email: true } },
+        customer: { select: { id: true, fullName: true, phone: true, email: true, preferredCity: true } },
         project:  { select: { id: true, name: true, city: true } },
         builder:  { select: { id: true, companyName: true } },
-        cp:       { select: { id: true, user: { select: { fullName: true } } } },
+        cp:       { select: { id: true, city: true, user: { select: { id: true, fullName: true } } } },
         loanCase: { select: { id: true, status: true } },
       },
       orderBy: { createdAt: 'desc' },
       take: 200,
     });
     res.json({ ok: true, data: deals });
+  },
+
+  // ── Assign (or unassign) a CP to a deal ────────────────────────────────────
+  assignCPToDeal: async (req: Request, res: Response) => {
+    const { dealId } = req.params;
+    const { cpUserId } = req.body as { cpUserId: number | null };
+
+    let cpId: number | null = null;
+    if (cpUserId != null) {
+      // Ensure the ChannelPartner row exists — create it if this CP has never used the CP features yet
+      const cp = await prisma.channelPartner.upsert({
+        where:  { userId: Number(cpUserId) },
+        update: {},
+        create: { userId: Number(cpUserId) },
+      });
+      cpId = cp.id;
+    }
+
+    const updated = await prisma.deal.update({
+      where: { id: Number(dealId) },
+      data:  { cpId },
+      include: {
+        customer: { select: { id: true, fullName: true, phone: true, email: true, preferredCity: true } },
+        project:  { select: { id: true, name: true, city: true } },
+        builder:  { select: { id: true, companyName: true } },
+        cp:       { select: { id: true, city: true, user: { select: { id: true, fullName: true } } } },
+        loanCase: { select: { id: true, status: true } },
+      },
+    });
+
+    if (cpId) {
+      await notifyDealParties(updated.id, {
+        type: 'deal_assigned',
+        title: 'Deal Assigned',
+        message: `You have been assigned to the deal for ${updated.project.name}.`,
+        to: ['cp'],
+      });
+    }
+
+    res.json({ ok: true, data: updated });
   },
 
   // ── Update deal milestone stage ────────────────────────────────────────────
